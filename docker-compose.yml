@@ -1,0 +1,47 @@
+services:
+  mon_monitor_db:
+    image: mariadb:11.4
+    container_name: mon_monitor_db
+    hostname: mon_monitor_db
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-pippo}
+      MARIADB_DATABASE: monitor
+      MARIADB_USER: monitor
+      MARIADB_PASSWORD: ${DB_PASSWORD:-pippo}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - default
+
+  mon_monitor:
+    build: .
+    image: mon_monitor:latest
+    container_name: mon_monitor
+    hostname: mon_monitor
+    restart: unless-stopped
+    depends_on:
+      mon_monitor_db:
+        condition: service_healthy
+    environment:
+      DB_HOST: mon_monitor_db
+      DB_PORT: 3306
+      DB_NAME: monitor
+      DB_USER: monitor
+      DB_PASSWORD: ${DB_PASSWORD:-pippo}
+      POLL_SECONDS: 15
+      # Chiave che cifra le password dei server monitorati. Non è nel database: se si perde,
+      # le password salvate non si possono più decifrare. Va nel file .env, mai nel repository.
+      APP_SECRET_KEY: ${APP_SECRET_KEY:?Impostare APP_SECRET_KEY nel file .env}
+    ports:
+      - "8080:8080"
+    networks:
+      - default
+
+volumes:
+  db_data:

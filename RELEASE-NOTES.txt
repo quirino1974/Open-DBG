@@ -1,0 +1,20 @@
+NOTE DI RILASCIO
+Autore: Quirino Scaramastra
+
+
+2026-11-03 · versione Alfa 0.1
+------------------------------
+
+Prima versione pubblicata come laboratorio.
+
+- Monitoraggio via JDBC in sola lettura di MySQL 8.4, MariaDB 11.4, PostgreSQL 17 e SQL Server 2022.
+- Dashboard con server, cluster, repliche e stati; topologia dei cluster InnoDB e Galera.
+- Indicazione del nodo candidato al ripristino per i cluster Galera fermi.
+- Insight giornaliero con punteggio, controlli, esiti e raccomandazioni.
+- Commento IA opzionale con Anthropic, OpenAI o entrambi.
+- Notifiche Telegram con conferma di presa visione.
+- Ricerca di un database per nome su più server.
+- Piano di esecuzione (EXPLAIN) delle query, senza eseguirle.
+- Utenti con profili, server assegnati, cambio obbligatorio della password al primo accesso
+  e limite ai tentativi di accesso.
+- Cifratura delle password dei server e delle chiavi API con APP_SECRET_KEY.

@@ -1,0 +1,20 @@
+RELEASE NOTES
+Author: Quirino Scaramastra
+
+
+2026-11-03 · Alpha version 0.1
+------------------------------
+
+First version published as a lab.
+
+- Read-only JDBC monitoring of MySQL 8.4, MariaDB 11.4, PostgreSQL 17 and SQL Server 2022.
+- Dashboard with servers, clusters, replicas and states; InnoDB and Galera cluster topology.
+- Candidate node for recovery shown for stopped Galera clusters.
+- Daily Insight with score, checks, results and recommendations.
+- Optional AI comment with Anthropic, OpenAI or both.
+- Telegram notifications with acknowledgement.
+- Database search by name across several servers.
+- Execution plan (EXPLAIN) of queries, without running them.
+- Users with profiles, assigned servers, mandatory password change at first sign-in
+  and a limit on failed sign-in attempts.
+- Server passwords and API keys encrypted with APP_SECRET_KEY.

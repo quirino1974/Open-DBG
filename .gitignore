@@ -1,0 +1,8 @@
+.env
+# I dati del database sono in un volume Docker gestito da Docker
+backups/
+backend/target/
+frontend/node_modules/
+frontend/dist/
+__pycache__/
+*.log

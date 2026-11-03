@@ -1,0 +1,45 @@
+DBGUARDIAN REQUIREMENTS
+Author: Quirino Scaramastra
+
+SYSTEM
+------
+
+- Linux or macOS with Docker Engine or Docker Desktop.
+- Windows 10 or 11 with Docker Desktop and the WSL 2 backend enabled (default setting).
+  The avvia.ps1 script requires PowerShell 5.1 or later, already included in Windows.
+  If PowerShell blocks scripts, run once: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+- Docker Engine 24 or later, or Docker Desktop, with Docker Compose v2 (command "docker compose").
+- RAM: at least 4 GB free for the monitor, the monitor database and the build.
+  The image build uses Node 22 and Maven: the first start takes a few minutes.
+- Disk: about 3 GB for the images, plus the space used by the database volume (db_data).
+
+IMAGES AND DOWNLOADS
+--------------------
+
+The first start downloads from the internet:
+- mariadb:11.4 (monitor database);
+- node:22-alpine, maven:3.9-eclipse-temurin-21 and eclipse-temurin:21-jre (build).
+
+The monitor container must be able to reach the monitored servers on their database
+port, and the AI provider API if enabled:
+- api.anthropic.com and api.openai.com (port 443), only with the AI comment enabled;
+- api.telegram.org (port 443), only with Telegram notifications enabled.
+
+PORTS
+-----
+
+- 8080: the monitor web interface (configurable in docker-compose.yml).
+- 3306, 5432, 1433 and similar: ports of the monitored databases, reachable from the container.
+
+CONFIGURATION
+-------------
+
+- A .env file with a required APP_SECRET_KEY: the start script creates it (see README.en.txt).
+- DB_ROOT_PASSWORD, DB_PASSWORD: optional; the default is only meant for the lab.
+
+TESTED VERSIONS
+---------------
+
+- MySQL 8.4 and MariaDB 11.4 with InnoDB and Galera clusters.
+- PostgreSQL 17 with streaming replicas.
+- SQL Server 2022.

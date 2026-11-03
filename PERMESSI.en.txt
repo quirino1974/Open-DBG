@@ -1,0 +1,85 @@
+USER PERMISSIONS FOR MONITORING
+Author: Quirino Scaramastra
+
+The monitor only reads. No check runs writes or DDL.
+Execution plans (EXPLAIN) are not run: for writes (UPDATE, DELETE, INSERT ... SELECT)
+only the read part of the query is planned.
+
+
+MYSQL 8.4 AND MARIADB 11.4
+--------------------------
+
+Create a dedicated user instead of using root:
+
+    CREATE USER 'dbguardian'@'%' IDENTIFIED BY '<password>';
+    GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'dbguardian'@'%';
+    FLUSH PRIVILEGES;
+
+Without performance_schema enabled there are no slow queries.
+
+Permissions per check:
+- active connections and active queries: PROCESS
+- slowest queries: SELECT on performance_schema (performance_schema=ON)
+- execution plan: SELECT on the tables of the query
+- users and password expiry: SELECT on mysql.user
+- replication: REPLICATION CLIENT
+- unused indexes: SELECT on sys and performance_schema
+
+MariaDB: performance_schema is disabled by default. Enable it in the server
+configuration with performance_schema=ON.
+
+
+POSTGRESQL 17
+-------------
+
+    CREATE ROLE dbguardian_mon LOGIN PASSWORD '<password>';
+    GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO dbguardian_mon;
+
+For each monitored database:
+
+    GRANT CONNECT ON DATABASE <database> TO dbguardian_mon;
+    GRANT USAGE ON SCHEMA public TO dbguardian_mon;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO dbguardian_mon;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbguardian_mon;
+
+Permissions per check:
+- connections, active queries and idle transactions: pg_monitor (pg_stat_activity)
+- slowest queries: the pg_stat_statements extension installed in the connected database
+- execution plan: SELECT on the tables of the query
+- role expiry: pg_roles, readable by everyone
+
+For slow queries, install the extension in each connected database:
+
+    CREATE EXTENSION pg_stat_statements;
+
+It requires shared_preload_libraries = 'pg_stat_statements' and a server restart.
+
+
+SQL SERVER 2022
+---------------
+
+At server level:
+
+    CREATE LOGIN stats_reader WITH PASSWORD = '<password>', CHECK_POLICY = ON;
+    GRANT VIEW SERVER STATE TO stats_reader;
+    GRANT VIEW SERVER PERFORMANCE STATE TO stats_reader;
+    GRANT VIEW ANY DEFINITION TO stats_reader;
+
+For each monitored database:
+
+    USE <database>;
+    CREATE USER stats_reader FOR LOGIN stats_reader;
+    ALTER ROLE db_datareader ADD MEMBER stats_reader;
+    GRANT VIEW DATABASE STATE TO stats_reader;
+    GRANT SHOWPLAN TO stats_reader;
+
+To avoid database closing and index counter resets:
+
+    ALTER DATABASE <database> SET AUTO_CLOSE OFF;
+
+Permissions per check:
+- connections, active queries and resources: VIEW SERVER STATE and VIEW SERVER PERFORMANCE STATE
+- slowest queries: VIEW SERVER PERFORMANCE STATE
+- users and login expiry: VIEW ANY DEFINITION
+- index fragmentation and usage: VIEW DATABASE STATE
+- execution plan: SHOWPLAN and SELECT on the tables
