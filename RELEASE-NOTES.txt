@@ -2,6 +2,25 @@ NOTE DI RILASCIO
 Autore: Quirino Scaramastra
 
 
+2026-11-05 · versione Alfa 0.2
+------------------------------
+
+- MongoDB 8.0: stato del replica set, ritardo, oplog, operazioni lunghe, cache WiredTiger,
+  connessioni, dimensione dei database e query lente con il profiler.
+- Funzioni IA on demand: spiegazione di un evento o di una query, suggerimenti per una query,
+  riepilogo degli incidenti, domande sul monitoraggio e rilevazione di anomalie. Solo testo.
+- Commento IA con Ollama locale, oltre ad Anthropic e OpenAI.
+- Metriche dell'host (CPU e memoria) da node_exporter, facoltative per ogni server.
+- Pulsante "Termina sessione" per le transazioni bloccate, con un'utenza separata che ha solo
+  il permesso di terminare sessioni.
+- "Sospendi monitoraggio": il server non viene connesso, né rilevato né incluso nell'Insight.
+- Catalogo dei controlli per tecnologia: un controllo deselezionato non viene eseguito.
+- Statistiche su indici e database, e gestione dei siti nelle impostazioni (solo amministratore).
+- Manuale dentro l'applicazione.
+- Il file docker-compose.yml non contiene più password né chiavi: si leggono dal file .env.
+- La rete Docker del monitor è solo quella del progetto: per i server in un'altra rete vedere README.txt.
+
+
 2026-11-03 · versione Alfa 0.1
 ------------------------------
 

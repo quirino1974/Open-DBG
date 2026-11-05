@@ -21,15 +21,17 @@ Il primo avvio scarica da internet:
 - node:22-alpine, maven:3.9-eclipse-temurin-21 ed eclipse-temurin:21-jre (build).
 
 Il container del monitor deve poter raggiungere i server monitorati sulla porta
-del loro database, e l'API del provider IA se la si abilita:
-- api.anthropic.com e api.openai.com (porta 443), solo con il commento IA attivo;
-- api.telegram.org (porta 443), solo con le notifiche Telegram attive.
+del loro database, e le API dei provider IA se li si abilita:
+- api.anthropic.com e api.openai.com (porta 443), solo con l'IA attiva;
+- api.telegram.org (porta 443), solo con le notifiche Telegram attive;
+- Ollama sul computer host (porta 11434 di default), solo con il provider Ollama;
+- node_exporter sugli host, solo se ne indica l'indirizzo nella scheda del server.
 
 PORTE
 -----
 
 - 8080: interfaccia web del monitor (configurabile nel docker-compose.yml).
-- 3306, 5432, 1433 e simili: porte dei database monitorati, da raggiungere dal container.
+- 3306, 5432, 1433, 27017 e simili: porte dei database monitorati, da raggiungere dal container.
 
 CONFIGURAZIONE
 --------------
@@ -37,9 +39,17 @@ CONFIGURAZIONE
 - File .env con APP_SECRET_KEY obbligatoria: lo crea lo script di avvio (vedere README.txt).
 - DB_ROOT_PASSWORD, DB_PASSWORD: facoltative; il default serve solo per il laboratorio.
 
+UTENZE DEI SERVER
+-----------------
+
+Ogni server monitorato richiede un utente di sola lettura. I permessi minimi per ogni
+tecnologia sono in PERMESSI.txt. L'utenza facoltativa per terminare le sessioni bloccanti è
+separata e va creata solo se si vuole usare quel pulsante.
+
 VERSIONI TESTATE
 ----------------
 
 - MySQL 8.4 e MariaDB 11.4 con cluster InnoDB e Galera.
 - PostgreSQL 17 con repliche in streaming.
 - SQL Server 2022.
+- MongoDB 8.0 con replica set.

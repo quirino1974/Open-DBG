@@ -25,6 +25,9 @@ services:
     container_name: mon_monitor
     hostname: mon_monitor
     restart: unless-stopped
+    # Ollama sull'host: il container lo raggiunge come host.docker.internal (IA locale)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       mon_monitor_db:
         condition: service_healthy
@@ -36,7 +39,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-pippo}
       POLL_SECONDS: 15
       # Chiave che cifra le password dei server monitorati. Non è nel database: se si perde,
-      # le password salvate non si possono più decifrare. Va nel file .env, mai nel repository.
+      # le password salvate non si possono più decifrare. Conservarne una copia al sicuro.
       APP_SECRET_KEY: ${APP_SECRET_KEY:?Impostare APP_SECRET_KEY nel file .env}
     ports:
       - "8080:8080"

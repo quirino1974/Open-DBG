@@ -55,6 +55,13 @@ public class Store {
                 st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS sito VARCHAR(64) NOT NULL DEFAULT ''");
                 // server inclusi nel report Insight; il default 1 mantiene i server già esistenti nel report
                 st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS insight TINYINT(1) NOT NULL DEFAULT 1");
+                // notifiche Telegram per questo server; hanno effetto solo se Telegram è attivo nella configurazione generale
+                st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS telegram TINYINT(1) NOT NULL DEFAULT 1");
+                // utenza separata per terminare le sessioni bloccanti (il monitor resta in sola lettura con la sua)
+                st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS kill_user VARCHAR(128) NOT NULL DEFAULT ''");
+                st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS kill_password VARCHAR(1024) NOT NULL DEFAULT ''");
+                // sospensione del monitoraggio: spenti rilevamento, controlli, Insight e notifiche per il server
+                st.execute("ALTER TABLE servers ADD COLUMN IF NOT EXISTS sospeso TINYINT(1) NOT NULL DEFAULT 0");
                 // spazio per la password cifrata (IV + testo + tag, in base64)
                 st.execute("ALTER TABLE servers MODIFY password VARCHAR(1024) NOT NULL");
                 st.execute("CREATE TABLE IF NOT EXISTS config_log ("
@@ -125,7 +132,7 @@ public class Store {
         ArrayNode out = Main.JSON.createArrayNode();
         try (Connection c = conn();
              PreparedStatement ps = c.prepareStatement("SELECT id, name, kind, host, port, user_name, password, "
-                     + "database_name, resource_mode, metrics_url, galera_cluster, ambiente, sito, controlli, insight FROM servers ORDER BY position, name");
+                     + "database_name, resource_mode, metrics_url, galera_cluster, ambiente, sito, controlli, insight, telegram, kill_user, kill_password, sospeso FROM servers ORDER BY position, name");
              var rs = ps.executeQuery()) {
             while (rs.next()) {
                 ObjectNode o = out.addObject();
@@ -144,6 +151,11 @@ public class Store {
                 o.put("sito", rs.getString("sito"));
                 o.put("controlli", rs.getString("controlli"));
                 o.put("insight", rs.getBoolean("insight"));
+                o.put("telegram", rs.getBoolean("telegram"));
+                o.put("sospeso", rs.getBoolean("sospeso"));
+                o.put("killUser", rs.getString("kill_user"));
+                String kp = rs.getString("kill_password");
+                o.put("killPassword", kp == null || kp.isEmpty() ? "" : Crypto.decrypt(kp));
             }
         }
         return out;
@@ -157,8 +169,8 @@ public class Store {
                 st.executeUpdate("DELETE FROM servers");
             }
             try (PreparedStatement ps = c.prepareStatement("INSERT INTO servers (id, name, kind, host, port, "
-                    + "user_name, password, database_name, resource_mode, metrics_url, galera_cluster, ambiente, sito, position, controlli, insight) "
-                    + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
+                    + "user_name, password, database_name, resource_mode, metrics_url, galera_cluster, ambiente, sito, position, controlli, insight, telegram, kill_user, kill_password, sospeso) "
+                    + "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")) {
                 int pos = 0;
                 for (JsonNode s : list) {
                     ps.setString(1, s.get("id").asText());
@@ -180,6 +192,11 @@ public class Store {
                                 : String.join(",", java.util.stream.StreamSupport.stream(s.get("controlli").spliterator(), false).map(JsonNode::asText).toList()))
                             : (s.hasNonNull("controlli") ? s.get("controlli").asText() : ""));
                     ps.setBoolean(16, s.path("insight").asBoolean(true));
+                    ps.setBoolean(17, s.path("telegram").asBoolean(false));
+                    ps.setString(18, s.hasNonNull("killUser") ? s.get("killUser").asText() : "");
+                    String kp = s.hasNonNull("killPassword") ? s.get("killPassword").asText() : "";
+                    ps.setString(19, kp.isEmpty() ? "" : Crypto.encrypt(kp));
+                    ps.setBoolean(20, s.path("sospeso").asBoolean(false));
                     ps.addBatch();
                 }
                 ps.executeBatch();
@@ -255,6 +272,21 @@ public class Store {
 
     static void event(String serverId, String serverName, String cluster, String severity, String category,
                       String message) {
+        event(serverId, serverName, cluster, severity, category, message, null);
+    }
+
+    /** Come {@link #event(String, String, String, String, String, String)}; con {@code testa} la notifica Telegram offre il kill. */
+    static void event(String serverId, String serverName, String cluster, String severity, String category,
+                      String message, Long testa) {
+        event(serverId, serverName, cluster, severity, category, message, testa, null);
+    }
+
+    /**
+     * Come sopra. {@code contesto} (JSON con host, topologia e sessioni) serve alla notifica Telegram per il
+     * messaggio scritto dall'IA, se attivo. Può essere null.
+     */
+    static void event(String serverId, String serverName, String cluster, String severity, String category,
+                      String message, Long testa, String contesto) {
         try (Connection c = conn();
              PreparedStatement ps = c.prepareStatement("INSERT INTO events (occurred_at, server_id, server_name, "
                      + "cluster_name, severity, category, message) VALUES (NOW(3), ?, ?, ?, ?, ?, ?)")) {
@@ -270,7 +302,7 @@ public class Store {
             return;
         }
         // notifica facoltativa su Telegram, in asincrono
-        Telegram.evento(severity, serverName, category, message);
+        Telegram.evento(serverId, severity, serverName, category, message, testa, contesto);
     }
 
     /** Ultimi eventi; con {@code ids} limitati ai server indicati (null = tutti). */

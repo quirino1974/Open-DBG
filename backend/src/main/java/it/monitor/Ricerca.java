@@ -38,8 +38,10 @@ final class Ricerca {
         List<JsonNode> server = new ArrayList<>();
         for (JsonNode s : Main.loadServers()) {
             String tipo = Main.text(s, "kind");
-            if (!tipo.equals("server") && !tipo.equals("postgres")) continue;
+            if (!tipo.equals("server") && !tipo.equals("postgres") && !tipo.equals("sqlserver")) continue;
             if (visibili != null && !visibili.contains(s.get("id").asText())) continue;
+            // Monitoraggio sospeso: il server non viene interrogato né segnalato tra i non interrogati
+            if (Main.isSospeso(s)) continue;
             server.add(s);
         }
 
@@ -95,8 +97,12 @@ final class Ricerca {
         r.put("ambiente", Main.text(s, "ambiente"));
         r.put("sito", Main.text(s, "sito"));
         // PostgreSQL: i database sono in pg_database (information_schema elenca solo gli schemi)
+        // SQL Server: solo i database online che il login può aprire (gli altri non si possono interrogare)
+        boolean sqlServer = "sqlserver".equals(Main.text(s, "kind"));
         String sql = Main.isPostgres(s)
                 ? "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname LIKE ? ORDER BY datname"
+                : sqlServer
+                ? "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND HAS_DBACCESS(name) = 1 AND name LIKE ? ESCAPE '\\' ORDER BY name"
                 : "SELECT SCHEMA_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE ? ORDER BY SCHEMA_NAME";
         try (Connection c = Main.open(s);
              PreparedStatement ps = c.prepareStatement(sql)) {
@@ -107,7 +113,7 @@ final class Ricerca {
             }
             r.put("raggiungibile", true);
             r.put("database", db);
-            r.put("motore", Main.isPostgres(s) ? "PostgreSQL"
+            r.put("motore", Main.isPostgres(s) ? "PostgreSQL" : sqlServer ? "SQL Server"
                     : Main.str(Main.varOrNull(c, "@@version_comment")).toLowerCase().contains("mariadb") ? "MariaDB" : "MySQL");
         } catch (Exception e) {
             r.put("raggiungibile", false);

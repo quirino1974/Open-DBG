@@ -40,6 +40,7 @@ final class SqlServerReport {
             // Ogni controllo viene eseguito solo se selezionato per il server in anagrafica
             r.put("connessioni", Main.controllo(cfg, "connessioni") ? safe(errori, "connessioni", () -> connessioni(st)) : null);
             r.put("queryAttive", Main.controllo(cfg, "query_attive") ? safe(errori, "queryAttive", () -> queryAttive(st)) : null);
+            r.put("bloccate", Main.controllo(cfg, "transazioni_bloccate") ? safe(errori, "bloccate", () -> bloccate(st)) : null);
             if (!Main.controllo(cfg, "query_lente")) {
                 r.put("queryLente", null);
             } else if (pesante || precedente == null) {
@@ -162,6 +163,30 @@ final class SqlServerReport {
         return m;
     }
 
+    /** Richieste in attesa di un lock (blocking_session_id) e l'ultima query della sessione che lo tiene. */
+    private static List<Map<String, Object>> bloccate(Statement st) throws SQLException {
+        List<Map<String, Object>> out = new ArrayList<>();
+        try (ResultSet rs = st.executeQuery("SELECT TOP 100 r.session_id AS ID, s.login_name AS UTENTE, DB_NAME(r.database_id) AS DB, "
+                + "r.wait_time / 1000 AS SECONDI, SUBSTRING(t.text, 1, 300) AS QUERY, r.blocking_session_id AS BLOCCANTE_ID, "
+                + "(SELECT TOP 1 SUBSTRING(tb.text, 1, 300) FROM sys.dm_exec_connections cb "
+                + "CROSS APPLY sys.dm_exec_sql_text(cb.most_recent_sql_handle) tb WHERE cb.session_id = r.blocking_session_id) AS QUERY_BLOCCANTE "
+                + "FROM sys.dm_exec_requests r JOIN sys.dm_exec_sessions s ON s.session_id = r.session_id "
+                + "CROSS APPLY sys.dm_exec_sql_text(r.sql_handle) t WHERE r.blocking_session_id <> 0 ORDER BY SECONDI DESC")) {
+            while (rs.next()) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("ID", rs.getObject(1));
+                m.put("UTENTE", rs.getString(2));
+                m.put("DB", rs.getString(3));
+                m.put("SECONDI", rs.getObject(4));
+                m.put("QUERY", rs.getString(5));
+                m.put("BLOCCANTE_ID", rs.getObject(6));
+                m.put("QUERY_BLOCCANTE", rs.getString(7));
+                out.add(m);
+            }
+        }
+        return out;
+    }
+
     private static List<Map<String, Object>> queryAttive(Statement st) throws SQLException {
         List<Map<String, Object>> out = new ArrayList<>();
         try (ResultSet rs = st.executeQuery("SELECT TOP 30 r.session_id, DB_NAME(r.database_id) AS db, s.login_name, r.status, "
@@ -228,7 +253,7 @@ final class SqlServerReport {
                 : "Scrittura non eseguita: il piano è quello della parte di lettura (la stessa che SQL Server deve leggere).";
         sql = lettura;
         String pulito = sql.trim().replaceAll(";+\\s*$", "");
-        if (pulito.contains(";")) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
+        if (Main.piuIstruzioni(pulito)) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
         sql = pulito;
         String up = sql.toUpperCase();
         if (!(up.startsWith("SELECT") || up.startsWith("WITH") || up.startsWith("INSERT")
@@ -240,7 +265,7 @@ final class SqlServerReport {
         List<String> candidati = new ArrayList<>();
         if (db != null && !db.isEmpty()) candidati.add(db);
         try (Connection c = Main.open(cfg); Statement st = c.createStatement();
-             ResultSet rs = st.executeQuery("SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE' ORDER BY name")) {
+             ResultSet rs = st.executeQuery("SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE' AND HAS_DBACCESS(name) = 1 ORDER BY name")) {
             while (rs.next()) if (!candidati.contains(rs.getString(1))) candidati.add(rs.getString(1));
         }
         if (candidati.isEmpty()) candidati.add(null);
@@ -259,13 +284,15 @@ final class SqlServerReport {
                 ultimo = null;
                 break;
             } catch (SQLException e) {
-                // Oggetto non presente in questo database: si prova il successivo
-                if (!String.valueOf(e.getMessage()).contains("Invalid object name")) throw e;
+                // Oggetto non presente, o database non accessibile con questo login: si prova il successivo.
+                // Un database non accessibile non deve bloccare gli altri (il login non vede tutti i database).
+                String msg = String.valueOf(e.getMessage());
+                if (!msg.contains("Invalid object name") && !msg.contains("Cannot open database")) throw e;
                 ultimo = e;
             }
         }
         if (ultimo != null) {
-            throw new IllegalArgumentException("Oggetti della query non trovati in nessun database online del server: " + ultimo.getMessage());
+            throw new IllegalArgumentException("Piano non disponibile: nessun database online accessibile con questo login contiene gli oggetti della query. " + ultimo.getMessage());
         }
         sql = sqlPiano;
         Map<String, Object> out = new LinkedHashMap<>();

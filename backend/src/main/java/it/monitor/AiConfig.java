@@ -13,29 +13,35 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
 
 /**
- * Configurazione dell'analisi Insight tramite IA (Anthropic o OpenAI). Una sola riga nella tabella
- * ai_config. Le chiavi API sono cifrate con {@link Crypto} e non vengono mai restituite per intero.
+ * Configurazione dell'analisi Insight tramite IA (Anthropic, OpenAI oppure Ollama locale). Una sola riga nella
+ * tabella ai_config. Le chiavi API sono cifrate con {@link Crypto} e non vengono mai restituite per intero.
  * Prima dell'invio al provider il report viene ridotto: niente indirizzi di rete, solo nomi, esiti e raccomandazioni.
+ * Ollama non richiede chiave: il modello gira sull'host e viene interrogato all'indirizzo configurato.
  */
 final class AiConfig {
     private AiConfig() {}
 
     static final String ANTHROPIC = "anthropic";
     static final String OPENAI = "openai";
+    /** Modello locale, raggiunto all'indirizzo configurato (senza chiave API). */
+    static final String OLLAMA = "ollama";
     /** Usa entrambi i provider: il commento è la somma delle due risposte. */
     static final String ENTRAMBI = "entrambi";
     static final String MODELLO_ANTHROPIC_PREDEFINITO = "claude-sonnet-5-5";
     static final String MODELLO_OPENAI_PREDEFINITO = "gpt-4.1-mini"; // da verificare sul listino OpenAI
+    static final String MODELLO_OLLAMA_PREDEFINITO = "llama3.2";
+    /** Dal container, l'host si raggiunge con host.docker.internal (vedi extra_hosts nel compose). */
+    static final String URL_OLLAMA_PREDEFINITO = "http://host.docker.internal:11434";
 
     private static final Pattern MODELLO = Pattern.compile("[A-Za-z0-9._:-]{1,128}");
     private static final Pattern CHIAVE = Pattern.compile("\\S{8,512}");
+    private static final Pattern URL_LOCALE = Pattern.compile("https?://[A-Za-z0-9.\\-]{1,253}(:\\d{1,5})?/?");
     private static final HttpClient HTTP = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
     private static final Duration TIMEOUT = Duration.ofSeconds(90);
 
@@ -49,7 +55,7 @@ final class AiConfig {
             Usa solo i dati ricevuti: non inventare valori, non suggerire modifiche senza una verifica preventiva, \
             e segnala quando un dato non basta per una conclusione.""";
 
-    /** Creazione della tabella e della riga di configurazione (una sola). */
+    /** Creazione della tabella e della riga di configurazione (una sola), con le colonne di Ollama. */
     static void init() throws SQLException {
         try (Connection c = Store.conn(); Statement st = c.createStatement()) {
             st.execute("CREATE TABLE IF NOT EXISTS ai_config ("
@@ -62,44 +68,59 @@ final class AiConfig {
                     + " chiave_openai TEXT,"
                     + " aggiornato_il DATETIME(3) NOT NULL"
                     + ") ENGINE=InnoDB");
+            st.execute("ALTER TABLE ai_config ADD COLUMN IF NOT EXISTS modello_ollama VARCHAR(128) NOT NULL DEFAULT '"
+                    + MODELLO_OLLAMA_PREDEFINITO + "'");
+            st.execute("ALTER TABLE ai_config ADD COLUMN IF NOT EXISTS url_ollama VARCHAR(255) NOT NULL DEFAULT '"
+                    + URL_OLLAMA_PREDEFINITO + "'");
             st.execute("INSERT IGNORE INTO ai_config (id, aggiornato_il) VALUES (1, NOW(3))");
         }
     }
 
     /** Riga corrente della configurazione. */
     private record Riga(boolean abilitata, String provider, String modelloAnthropic, String modelloOpenai,
-                        String chiaveAnthropic, String chiaveOpenai) {
+                        String chiaveAnthropic, String chiaveOpenai, String modelloOllama, String urlOllama) {
         /** Stessa configurazione con un solo provider da usare (per le chiamate singole). */
         Riga conProvider(String p) {
-            return new Riga(abilitata, p, modelloAnthropic, modelloOpenai, chiaveAnthropic, chiaveOpenai);
+            return new Riga(abilitata, p, modelloAnthropic, modelloOpenai, chiaveAnthropic, chiaveOpenai,
+                    modelloOllama, urlOllama);
         }
     }
 
-    /** Provider da interrogare per una scelta: uno solo, oppure entrambi. */
+    /** Provider da interrogare per una scelta: uno solo, oppure entrambi (Anthropic e OpenAI). */
     static List<String> providersAttivi(String scelta) {
         return ENTRAMBI.equals(scelta) ? List.of(ANTHROPIC, OPENAI) : List.of(scelta);
     }
 
     private static String nomeProvider(String p) {
-        return ANTHROPIC.equals(p) ? "Anthropic" : "OpenAI";
+        if (ANTHROPIC.equals(p)) return "Anthropic";
+        if (OLLAMA.equals(p)) return "Ollama";
+        return "OpenAI";
+    }
+
+    /** Modello scelto per un provider. */
+    private static String modelloDi(Riga r, String p) {
+        if (ANTHROPIC.equals(p)) return r.modelloAnthropic();
+        if (OLLAMA.equals(p)) return r.modelloOllama();
+        return r.modelloOpenai();
     }
 
     private static Riga leggi() throws SQLException {
         try (Connection c = Store.conn();
              PreparedStatement ps = c.prepareStatement("SELECT abilitata, provider, modello_anthropic, modello_openai, "
-                     + "chiave_anthropic, chiave_openai FROM ai_config WHERE id = 1");
+                     + "chiave_anthropic, chiave_openai, modello_ollama, url_ollama FROM ai_config WHERE id = 1");
              ResultSet rs = ps.executeQuery()) {
             if (!rs.next()) throw new SQLException("Configurazione IA mancante");
             return new Riga(rs.getBoolean(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                    rs.getString(5), rs.getString(6));
+                    rs.getString(5), rs.getString(6), rs.getString(7), rs.getString(8));
         }
     }
 
-    /** True se l'analisi IA è abilitata e il provider scelto ha una chiave. */
+    /** True se l'analisi IA è abilitata e il provider scelto ha ciò che gli serve (chiave, oppure niente per Ollama). */
     static boolean abilitata() {
         try {
             Riga r = leggi();
-            return r.abilitata() && providersAttivi(r.provider()).stream().allMatch(p -> chiaveDi(r, p) != null);
+            return r.abilitata() && providersAttivi(r.provider()).stream()
+                    .allMatch(p -> OLLAMA.equals(p) || chiaveDi(r, p) != null);
         } catch (SQLException | IllegalStateException e) {
             // IllegalStateException: chiave salvata non decifrabile (APP_SECRET_KEY diversa)
             return false;
@@ -110,7 +131,7 @@ final class AiConfig {
     static String etichettaProvider() throws SQLException {
         Riga r = leggi();
         return providersAttivi(r.provider()).stream()
-                .map(p -> nomeProvider(p) + " · " + (ANTHROPIC.equals(p) ? r.modelloAnthropic() : r.modelloOpenai()))
+                .map(p -> nomeProvider(p) + " · " + modelloDi(r, p))
                 .collect(java.util.stream.Collectors.joining(" + "));
     }
 
@@ -122,11 +143,15 @@ final class AiConfig {
         m.put("provider", r.provider());
         m.put("modelloAnthropic", r.modelloAnthropic());
         m.put("modelloOpenai", r.modelloOpenai());
+        m.put("modelloOllama", r.modelloOllama());
+        m.put("urlOllama", r.urlOllama());
         m.put("anthropicConfigurata", r.chiaveAnthropic() != null);
         m.put("anthropicMascherata", maschera(r.chiaveAnthropic()));
         m.put("openaiConfigurata", r.chiaveOpenai() != null);
         m.put("openaiMascherata", maschera(r.chiaveOpenai()));
-        m.put("modelliPredefiniti", Map.of(ANTHROPIC, MODELLO_ANTHROPIC_PREDEFINITO, OPENAI, MODELLO_OPENAI_PREDEFINITO));
+        m.put("modelliPredefiniti", Map.of(ANTHROPIC, MODELLO_ANTHROPIC_PREDEFINITO, OPENAI, MODELLO_OPENAI_PREDEFINITO,
+                OLLAMA, MODELLO_OLLAMA_PREDEFINITO));
+        m.put("urlOllamaPredefinito", URL_OLLAMA_PREDEFINITO);
         return m;
     }
 
@@ -138,21 +163,27 @@ final class AiConfig {
         Riga att = leggi();
         boolean abilitata = b.has("abilitata") ? b.get("abilitata").asBoolean() : att.abilitata();
         String provider = b.has("provider") ? b.get("provider").asText() : att.provider();
-        if (!ANTHROPIC.equals(provider) && !OPENAI.equals(provider) && !ENTRAMBI.equals(provider)) {
-            throw new IllegalArgumentException("Provider non valido: scegliere Anthropic, OpenAI o entrambi");
+        if (!ANTHROPIC.equals(provider) && !OPENAI.equals(provider) && !ENTRAMBI.equals(provider) && !OLLAMA.equals(provider)) {
+            throw new IllegalArgumentException("Provider non valido: scegliere Anthropic, OpenAI, entrambi o Ollama");
         }
         String modAnt = testo(b, "modelloAnthropic", att.modelloAnthropic());
         String modOai = testo(b, "modelloOpenai", att.modelloOpenai());
-        if (!MODELLO.matcher(modAnt).matches() || !MODELLO.matcher(modOai).matches()) {
+        String modOll = testo(b, "modelloOllama", att.modelloOllama());
+        if (!MODELLO.matcher(modAnt).matches() || !MODELLO.matcher(modOai).matches() || !MODELLO.matcher(modOll).matches()) {
             throw new IllegalArgumentException("Nome del modello non valido (lettere, cifre, . _ : -)");
+        }
+        String urlOll = testo(b, "urlOllama", att.urlOllama());
+        if (!URL_LOCALE.matcher(urlOll).matches()) {
+            throw new IllegalArgumentException("Indirizzo di Ollama non valido: usare http://host:porta (per esempio "
+                    + URL_OLLAMA_PREDEFINITO + ")");
         }
         String chiaveAnt = aggiorna(b, "chiaveAnthropic", "cancellaChiaveAnthropic", att.chiaveAnthropic(), "Anthropic");
         String chiaveOai = aggiorna(b, "chiaveOpenai", "cancellaChiaveOpenai", att.chiaveOpenai(), "OpenAI");
 
-        Riga nuova = new Riga(abilitata, provider, modAnt, modOai, chiaveAnt, chiaveOai);
+        Riga nuova = new Riga(abilitata, provider, modAnt, modOai, chiaveAnt, chiaveOai, modOll, urlOll);
         if (abilitata) {
             for (String p : providersAttivi(provider)) {
-                if (chiaveDi(nuova, p) == null) {
+                if (!OLLAMA.equals(p) && chiaveDi(nuova, p) == null) {
                     throw new IllegalArgumentException("Per abilitare l'analisi IA inserire la chiave API di " + nomeProvider(p));
                 }
             }
@@ -160,13 +191,15 @@ final class AiConfig {
         try (Connection c = Store.conn();
              PreparedStatement ps = c.prepareStatement("UPDATE ai_config SET abilitata = ?, provider = ?, "
                      + "modello_anthropic = ?, modello_openai = ?, chiave_anthropic = ?, chiave_openai = ?, "
-                     + "aggiornato_il = NOW(3) WHERE id = 1")) {
+                     + "modello_ollama = ?, url_ollama = ?, aggiornato_il = NOW(3) WHERE id = 1")) {
             ps.setBoolean(1, abilitata);
             ps.setString(2, provider);
             ps.setString(3, modAnt);
             ps.setString(4, modOai);
             ps.setString(5, chiaveAnt);
             ps.setString(6, chiaveOai);
+            ps.setString(7, modOll);
+            ps.setString(8, urlOll);
             ps.executeUpdate();
         }
     }
@@ -201,6 +234,16 @@ final class AiConfig {
         return chiamaScelti(r, ISTRUZIONI, "Esito dell'health check:\n" + dati);
     }
 
+    /**
+     * Richiesta generica al provider scelto, usata dalle funzioni IA on demand (SpiegaIA).
+     * Se l'IA è disabilitata o senza chiave lancia IllegalArgumentException con il messaggio per l'utente.
+     */
+    static String chiedi(String sistema, String utente) throws SQLException {
+        Riga r = leggi();
+        if (!abilitata()) throw new IllegalArgumentException("Abilitare AI per usare le funzioni");
+        return chiamaScelti(r, sistema, utente);
+    }
+
     /** Prova di connessione con il provider scelto: chiede una risposta di una parola. */
     static String prova() throws SQLException {
         return chiamaScelti(leggi(), "Rispondi solo con la parola OK.", "Test di connessione.");
@@ -211,7 +254,22 @@ final class AiConfig {
     private static String chiama(Riga r, String chiave, String sistema, String utente) {
         try {
             HttpRequest richiesta;
-            if (ANTHROPIC.equals(r.provider())) {
+            if (OLLAMA.equals(r.provider())) {
+                // API di Ollama in locale: /api/chat senza streaming; nessuna chiave
+                ObjectNode corpo = Main.JSON.createObjectNode();
+                corpo.put("model", r.modelloOllama());
+                corpo.put("stream", false);
+                ArrayNode msg = corpo.putArray("messages");
+                msg.addObject().put("role", "system").put("content", sistema);
+                msg.addObject().put("role", "user").put("content", utente);
+                corpo.putObject("options").put("num_predict", 1500);
+                String base = r.urlOllama().replaceAll("/+$", "");
+                richiesta = HttpRequest.newBuilder(URI.create(base + "/api/chat"))
+                        .timeout(TIMEOUT)
+                        .header("content-type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(Main.JSON.writeValueAsString(corpo)))
+                        .build();
+            } else if (ANTHROPIC.equals(r.provider())) {
                 ObjectNode corpo = Main.JSON.createObjectNode();
                 corpo.put("model", r.modelloAnthropic());
                 corpo.put("max_tokens", 1500);
@@ -241,10 +299,13 @@ final class AiConfig {
             HttpResponse<String> risposta = HTTP.send(richiesta, HttpResponse.BodyHandlers.ofString());
             JsonNode json = Main.JSON.readTree(risposta.body());
             if (risposta.statusCode() / 100 != 2) {
-                String msg = json.path("error").path("message").asText("risposta HTTP " + risposta.statusCode());
-                throw new IllegalStateException(ANTHROPIC.equals(r.provider()) ? "Anthropic: " + msg : "OpenAI: " + msg);
+                String msg = OLLAMA.equals(r.provider())
+                        ? json.path("error").asText("risposta HTTP " + risposta.statusCode())
+                        : json.path("error").path("message").asText("risposta HTTP " + risposta.statusCode());
+                throw new IllegalStateException(nomeProvider(r.provider()) + ": " + msg);
             }
-            String testo = ANTHROPIC.equals(r.provider())
+            String testo = OLLAMA.equals(r.provider()) ? json.path("message").path("content").asText("")
+                    : ANTHROPIC.equals(r.provider())
                     ? testoBlocchi(json.path("content"))
                     : json.path("choices").path(0).path("message").path("content").asText("");
             if (testo.isBlank()) throw new IllegalStateException("Risposta vuota dal provider");
@@ -269,7 +330,7 @@ final class AiConfig {
         int riusciti = 0;
         for (String p : ps) {
             String chiave = chiaveDi(r, p);
-            if (chiave == null) throw new IllegalStateException("Chiave API di " + nomeProvider(p) + " non configurata");
+            if (chiave == null && !OLLAMA.equals(p)) throw new IllegalStateException("Chiave API di " + nomeProvider(p) + " non configurata");
             try {
                 String testo = chiama(r.conProvider(p), chiave, sistema, utente);
                 if (ps.size() > 1) sb.append(nomeProvider(p)).append(":\n");
@@ -294,8 +355,12 @@ final class AiConfig {
 
     // ------------------------------------------------------------ utilità
 
-    /** Chiave in chiaro del provider scelto: in tabella è cifrata, quindi va sempre decifrata prima dell'uso. */
+    /**
+     * Chiave in chiaro del provider scelto: in tabella è cifrata, quindi va sempre decifrata prima dell'uso.
+     * Ollama non usa chiavi: restituisce null.
+     */
     private static String chiaveDi(Riga r, String provider) {
+        if (OLLAMA.equals(provider)) return null;
         return chiaveInChiaro(ANTHROPIC.equals(provider) ? r.chiaveAnthropic() : r.chiaveOpenai());
     }
 

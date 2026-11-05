@@ -86,6 +86,13 @@ final class PgReport {
                             + "AND backend_type = 'client backend' "
                             + "ORDER BY query_start NULLS LAST LIMIT " + Impostazioni.intero("query.attive_limite"))));
 
+            // Transazioni bloccate: sessioni in attesa di un lock e il pid che lo tiene (pg_blocking_pids)
+            r.put("bloccate", !Main.controllo(cfg, "transazioni_bloccate") ? null : safe(errori, "bloccate", () -> Main.q(c, "SELECT a.pid AS \"ID\", a.usename AS \"UTENTE\", a.datname AS \"DB\", "
+                    + "ROUND(EXTRACT(EPOCH FROM now() - a.query_start)::numeric, 1) AS \"SECONDI\", left(a.query, 300) AS \"QUERY\", "
+                    + "(pg_blocking_pids(a.pid))[1] AS \"BLOCCANTE_ID\", left(b.query, 300) AS \"QUERY_BLOCCANTE\" "
+                    + "FROM pg_stat_activity a LEFT JOIN pg_stat_activity b ON b.pid = (pg_blocking_pids(a.pid))[1] "
+                    + "WHERE cardinality(pg_blocking_pids(a.pid)) > 0 ORDER BY \"SECONDI\" DESC LIMIT 100")));
+
             // Query più lente (pg_stat_statements, se installato)
             r.put("queryLente", !Main.controllo(cfg, "query_lente") ? null : Main.filtraPianificabili(safe(errori, "queryLente", () -> {
                 if (!estensioneInstallata(c, "pg_stat_statements")) return List.of();
@@ -123,9 +130,10 @@ if (Main.controllo(cfg, "indici")) {
             }
 
             // Utenti e ruoli
-            // Transazioni inattive da oltre 5 minuti: bloccano il vacuum
+            // Transazioni inattive oltre la soglia configurabile (insight.transazioni_inattive_minuti): bloccano il vacuum
             r.put("transazioniInattive", !Main.controllo(cfg, "transazioni_inattive") ? null : safe(errori, "transazioniInattive", () -> Main.q(c,
-                    "SELECT count(*) AS n FROM pg_stat_activity WHERE state LIKE 'idle in transaction%' AND now() - state_change > interval '5 minutes'").get(0)));
+                    "SELECT count(*) AS n FROM pg_stat_activity WHERE state LIKE 'idle in transaction%' AND now() - state_change > interval '"
+                            + Impostazioni.intero("insight.transazioni_inattive_minuti") + " minutes'").get(0)));
             r.put("connessioni", !Main.controllo(cfg, "connessioni") ? null : safe(errori, "connessioni", () -> Main.q(c,
                     "SELECT count(*) AS attive FROM pg_stat_activity WHERE backend_type = 'client backend'").get(0)));
             // Utenti: scadenza dei ruoli (rolvaliduntil). PostgreSQL non registra la data di creazione dei ruoli.
@@ -173,7 +181,7 @@ if (Main.controllo(cfg, "indici")) {
                 }
             }
 
-            // Risorse del container (come per gli altri server)
+            // Risorse dell'host (come per gli altri server, solo modalità host)
 if (Main.controllo(cfg, "risorse")) {
             Map<String, Object> risorse = new LinkedHashMap<>();
             try {

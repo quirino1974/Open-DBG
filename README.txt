@@ -2,12 +2,12 @@ DBGUARDIAN
 Monitor open source per database, senza agent
 Autore: Quirino Scaramastra
 
-DBGuardian è un monitor per MySQL, MariaDB, PostgreSQL e Microsoft SQL Server.
-Non installa nulla sui server monitorati: si collega via JDBC, in sola lettura,
-e raccoglie quello che il database espone.
+DBGuardian è un monitor per MySQL, MariaDB, PostgreSQL, Microsoft SQL Server e MongoDB.
+Non installa nulla sui server monitorati: si collega con i driver di connessione, in sola
+lettura, e raccoglie quello che il database espone.
 
-Laboratorio sperimentale, versione Alfa. Nessun supporto, nessuna garanzia,
-nessuna manutenzione programmata. Non usarlo in produzione senza test.
+Laboratorio sperimentale, versione Alfa. Nessun supporto, nessuna garanzia, nessuna
+manutenzione programmata. Non usarlo in produzione senza test.
 
 
 COSA FA
@@ -15,15 +15,24 @@ COSA FA
 
 - Dashboard con tutti i server, cluster, repliche e server singoli, con uno stato per ciascuno.
 - Cluster InnoDB e Galera: nodo primario, membri e, a cluster fermo, il nodo candidato al ripristino.
+- MongoDB: stato del replica set, ritardo, oplog, operazioni lunghe, cache e connessioni.
 - Insight giornaliero: punteggio da 0 a 100 per ogni server, con controlli, esiti e raccomandazioni.
-- Commento IA opzionale sul report giornaliero, con Anthropic, OpenAI o entrambi.
+  I controlli selezionabili dipendono dalla tecnologia del server.
+- Funzioni IA on demand e commento IA opzionale sul report giornaliero, con Anthropic, OpenAI,
+  entrambi o un modello locale con Ollama. Le funzioni IA producono solo testo: non eseguono
+  nulla sui database.
 - Notifiche Telegram degli eventi, con conferma di presa visione.
 - Ricerca di un database per nome su tutti i server visibili.
 - Piano di esecuzione (EXPLAIN) delle query lente, senza eseguire la query.
+- Metriche dell'host (CPU e memoria) facoltative, lette da node_exporter.
+- Pulsante "Termina sessione" per le transazioni bloccate, con un'utenza separata che ha solo
+  il permesso di terminare sessioni (vedere PERMESSI.txt).
 - Configurazione per server: controlli da eseguire, ambiente, sito, partecipazione all'Insight.
+  Un server con "Sospendi monitoraggio" non viene connesso affatto.
 - Utenti con profili e server assegnati.
 
-Non modifica i database monitorati e non raccoglie metriche del sistema operativo.
+Non modifica i database monitorati. Le metriche del sistema operativo si leggono solo se si
+indica l'indirizzo di node_exporter nella scheda del server.
 
 
 INSTALLAZIONE E AVVIO
@@ -44,8 +53,8 @@ INSTALLAZIONE E AVVIO
    Lo script crea il file .env dal modello .env.example la prima volta, genera
    APP_SECRET_KEY e avvia i container con "docker compose up -d --build".
 
-   APP_SECRET_KEY cifra le password dei server monitorati. Non è nel database: se si
-   perde, le password salvate non si possono più leggere. Conservarne una copia al sicuro,
+   APP_SECRET_KEY cifra le password dei server monitorati e le chiavi API. Non è nel database:
+   se si perde, le password salvate non si possono più leggere. Conservarne una copia al sicuro,
    e non cambiarla dopo il primo avvio.
 
 3. Aprire http://localhost:8080 e accedere con:
@@ -55,7 +64,8 @@ INSTALLAZIONE E AVVIO
 
    Al primo accesso il monitor obbliga a cambiare la password.
    Le password di DB_PASSWORD e DB_ROOT_PASSWORD (in .env) sono quelle del database
-   del monitor. Il default "pippo" serve solo per il laboratorio locale.
+   del monitor. Il default "pippo" e "admin" servono solo per il laboratorio locale: vanno
+   cambiati prima di qualsiasi uso diverso da una prova.
 
 
 DOVE SONO I DATI
@@ -70,11 +80,11 @@ il container viene ricreato o aggiornato.
 
 Backup del volume (Linux e macOS):
 
-    docker run --rm -v mon_monitor_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/dbguardian-db.tgz -C /dati .
+    docker run --rm -v dbguardian_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/dbguardian-db.tgz -C /dati .
 
 Backup del volume (Windows, PowerShell):
 
-    docker run --rm -v mon_monitor_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/dbguardian-db.tgz -C /dati .
+    docker run --rm -v dbguardian_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/dbguardian-db.tgz -C /dati .
 
 Il nome del volume dipende dalla cartella del progetto: se la cartella si chiama
 dbguardian, il volume è dbguardian_db_data. Verificarlo con "docker volume ls".
@@ -94,15 +104,16 @@ AGGIUNGERE UN SERVER
 
 Nella scheda "Server da monitorare" (solo amministratore):
 
-- nome, tipo (MySQL o MariaDB, PostgreSQL, SQL Server, router, database del monitor);
-- host e porta raggiungibili dal container del monitor;
+- nome, tipo (MySQL o MariaDB, PostgreSQL, SQL Server, MongoDB, router, database del monitor);
+- host e porta raggiungibili dal container del monitor (MongoDB usa 27017 di default);
 - utente di sola lettura (vedere PERMESSI.txt);
 - ambiente, sito e, se presente, il cluster Galera;
 - il pulsante di test verifica la connessione prima del salvataggio;
 - "Includi nel report Insight" decide se il server entra nel report giornaliero.
 
-Il container del monitor deve poter raggiungere gli host dei server. Se i server sono
-in un'altra rete Docker, collegare il monitor a quella rete nel docker-compose.yml.
+Il container del monitor deve poter raggiungere gli host dei server. Se i server sono in
+un'altra rete Docker, collegare il monitor a quella rete nel docker-compose.yml, nella sezione
+del servizio mon_monitor, con la stessa sintassi della rete "default".
 
 
 TELEGRAM (FACOLTATIVO)
@@ -118,11 +129,13 @@ evento non viene inviato di nuovo. Il monitor riceve i clic interrogando Telegra
 senza aprire porte in ingresso: un solo processo alla volta può usare lo stesso token.
 
 
-COMMENTO IA (FACOLTATIVO)
--------------------------
+IA (FACOLTATIVO)
+----------------
 
-Nella scheda "Insight IA" si sceglie il provider (Anthropic, OpenAI o entrambi),
-si inseriscono le chiavi e i modelli, e si usa "Prova connessione".
+Nella scheda "Insight IA" si sceglie il provider (Anthropic, OpenAI, entrambi, o Ollama
+sul computer che ospita Docker), si inseriscono le chiavi e i modelli, e si usa
+"Prova connessione". Con Ollama il container raggiunge il servizio dell'host come
+host.docker.internal.
 
 Dati inviati al provider: nomi dei server, versioni, punteggi ed esiti dei controlli.
 Non vengono inviati indirizzi di rete, utenti, password né stringhe di connessione.

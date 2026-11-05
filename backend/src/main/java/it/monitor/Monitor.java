@@ -22,6 +22,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Raccolta periodica dei server: riassunto dello stato, generazione degli eventi
@@ -29,18 +30,38 @@ import java.util.concurrent.TimeUnit;
  */
 public class Monitor {
 
+    /**
+     * Stati di membro considerati sani: InnoDB/Galera usano ONLINE, MongoDB PRIMARY, SECONDARY e ARBITER.
+     * Qualunque altro stato (RECOVERING, DOWN, OFFLINE...) non è sano.
+     */
+    static final java.util.Set<String> STATI_MEMBRO_SANI = java.util.Set.of("ONLINE", "Synced", "PRIMARY", "SECONDARY", "ARBITER");
+
     /** Ultimo rilevamento per server: {"rep": report completo, "cur": riassunto, "server": nodo}. */
     static final Map<String, Map<String, Object>> LATEST = new ConcurrentHashMap<>();
 
     // ------------------------------------------------------------ raccolta
 
     /** Esegue un rilevamento completo di un server, genera eventi e salva lo snapshot. */
-    static synchronized Map<String, Object> collect(JsonNode s) {
+    static Map<String, Object> collect(JsonNode s) {
         return collect(s, true);
     }
 
-    /** Rilevamento di un server; {@code pesante} decide se rilevare anche le sezioni pesanti. */
-    static synchronized Map<String, Object> collect(JsonNode s, boolean pesante) {
+    /** Un oggetto di blocco per server: lo stesso server non viene rilevato in parallelo con sé stesso. */
+    private static final Map<String, Object> BLOCCHI = new ConcurrentHashMap<>();
+
+    /**
+     * Rilevamento di un server; {@code pesante} decide se rilevare anche le sezioni pesanti.
+     * Server diversi si rilevano in parallelo (il ciclo li affida a un pool): prima un lock di classe
+     * li metteva tutti in fila, e dopo un riavvio la prima raccolta durava minuti.
+     */
+    static Map<String, Object> collect(JsonNode s, boolean pesante) {
+        String id = s.get("id").asText();
+        synchronized (BLOCCHI.computeIfAbsent(id, k -> new Object())) {
+            return raccogli(s, pesante);
+        }
+    }
+
+    private static Map<String, Object> raccogli(JsonNode s, boolean pesante) {
         String id = s.get("id").asText();
         String name = Main.text(s, "name");
         Map<String, Object> precedente = LATEST.get(id);
@@ -49,6 +70,8 @@ public class Monitor {
                 ? SqlServerReport.report(s, pesante, repPrecedente)
                 : Main.report(s, pesante, repPrecedente);
         Map<String, Object> cur = summarize(rep, s);
+        // Sessioni bloccate: nel riassunto per confrontarle con il rilevamento precedente
+        cur.put("bloccate", rep.get("bloccate"));
         boolean up = Boolean.TRUE.equals(cur.get("up"));
 
         Map<String, Object> prev = LATEST.get(id);
@@ -109,7 +132,8 @@ public class Monitor {
         long adesso = System.currentTimeMillis();
         try {
             List<JsonNode> server = new ArrayList<>();
-            Main.loadServers().forEach((JsonNode s) -> server.add(s));
+            // Server con monitoraggio sospeso: nessuna connessione, nessun rilevamento
+            Main.loadServers().forEach((JsonNode s) -> { if (!Main.isSospeso(s)) server.add(s); });
             // Raggiungibilità di tutti i server in parallelo: un server giù non ritarda gli altri
             Map<String, Boolean> raggiungibili = new ConcurrentHashMap<>();
             ExecutorService pool = Executors.newFixedThreadPool(Math.min(8, Math.max(1, server.size())));
@@ -123,30 +147,65 @@ public class Monitor {
             } finally {
                 pool.shutdownNow();
             }
+            // Quali server rilevare e con quale profondità; poi la raccolta in parallelo
+            List<Runnable> lavori = new ArrayList<>();
             for (JsonNode s : server) {
                 try {
                     Map<String, Object> prev = LATEST.get(s.get("id").asText());
                     if (forza || prev == null) {
-                        collect(s, true);
+                        lavori.add(rilevamento(s, true));
                         continue;
                     }
                     boolean eraSu = Boolean.TRUE.equals(map(prev.get("cur")).get("up"));
                     boolean ora = Boolean.TRUE.equals(raggiungibili.get(s.get("id").asText()));
                     if (ora != eraSu) {
-                        collect(s, false);
+                        lavori.add(rilevamento(s, false));
                     } else if (adesso - longVal(prev.get("leggeroAt")) >= intervalloLeggeroMs()) {
-                        collect(s, adesso - longVal(prev.get("pesanteAt")) >= intervalloPesanteMs());
+                        lavori.add(rilevamento(s, adesso - longVal(prev.get("pesanteAt")) >= intervalloPesanteMs()));
                     }
                 } catch (Exception e) {
                     System.err.println("Rilevamento fallito per " + s.get("name").asText() + ": " + e.getMessage());
                 }
             }
+            eseguiInParallelo(lavori);
             if (forza || adesso - ultimoPurge >= INTERVALLO_PURGE_MS) {
                 Store.purge();
                 ultimoPurge = adesso;
             }
         } catch (Exception e) {
             System.err.println("Ciclo di monitoraggio non riuscito: " + e.getMessage());
+        }
+    }
+
+    /** Un rilevamento come lavoro: un errore su un server viene registrato e non ferma gli altri. */
+    private static Runnable rilevamento(JsonNode s, boolean pesante) {
+        return () -> {
+            try {
+                collect(s, pesante);
+            } catch (Exception e) {
+                System.err.println("Rilevamento fallito per " + s.get("name").asText() + ": " + e.getMessage());
+            }
+        };
+    }
+
+    /** Esegue i rilevamenti su un pool limitato (come la verifica di raggiungibilità) e aspetta che finiscano. */
+    private static void eseguiInParallelo(List<Runnable> lavori) {
+        if (lavori.isEmpty()) return;
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(8, lavori.size()));
+        try {
+            List<Future<?>> attese = new ArrayList<>();
+            for (Runnable r : lavori) attese.add(pool.submit(r));
+            for (Future<?> f : attese) {
+                try {
+                    f.get(10, TimeUnit.MINUTES);
+                } catch (TimeoutException e) {
+                    System.err.println("Rilevamento oltre il tempo massimo: prosegue il ciclo");
+                } catch (Exception e) {
+                    System.err.println("Rilevamento interrotto: " + e.getMessage());
+                }
+            }
+        } finally {
+            pool.shutdownNow();
         }
     }
 
@@ -281,12 +340,28 @@ public class Monitor {
             Map<String, Object> now = map(cm.get(host));
             Map<String, Object> before = map(pm.get(host));
             if (!before.isEmpty() && !Main.str(before.get("MEMBER_STATE")).equals(Main.str(now.get("MEMBER_STATE")))) {
-                String sev = "ONLINE".equals(now.get("MEMBER_STATE")) ? "INFO" : "WARNING";
+                String sev = STATI_MEMBRO_SANI.contains(Main.str(now.get("MEMBER_STATE"))) ? "INFO" : "WARNING";
                 Store.event(id, name, cluster, sev, "MEMBER_STATE",
                         "Membro " + host + ": " + before.get("MEMBER_STATE") + " → " + now.get("MEMBER_STATE"));
             }
         }
         // Thread di replica e relay log
+        // Transazioni bloccate: un evento per ogni coppia sessione in attesa / sessione bloccante non ancora segnalata
+        java.util.Set<String> giaSegnalate = new java.util.HashSet<>();
+        for (Map<String, Object> b : list(prev.get("bloccate"))) giaSegnalate.add(b.get("ID") + ">" + b.get("BLOCCANTE_ID"));
+        List<Map<String, Object>> tutteBloccate = list(cur.get("bloccate"));
+        for (Map<String, Object> b : tutteBloccate) {
+            if (!giaSegnalate.contains(b.get("ID") + ">" + b.get("BLOCCANTE_ID"))) {
+                Object testa = b.get("BLOCCANTE_ID") == null ? null : Main.testaCatena(tutteBloccate, b.get("ID"));
+                String msg = "Sessione " + b.get("ID") + " (" + Main.str(b.get("UTENTE")) + ", " + Main.str(b.get("DB")) + ") in attesa da "
+                        + Main.num(b.get("SECONDI")) + " s della sessione " + b.get("BLOCCANTE_ID")
+                        + ". Bloccante: " + firstLine(Main.str(b.get("QUERY_BLOCCANTE")));
+                if (testa != null) msg += "\nTesta della catena: " + testa;
+                Store.event(id, name, cluster, "WARNING", "BLOCKED_TRANSACTION", msg,
+                        testa == null ? null : Long.valueOf(String.valueOf(testa)),
+                        contestoBlocco(name, cur, b, testa));
+            }
+        }
         Map<String, Map<String, Object>> prevCh = channels(prev);
         for (Map<String, Object> ch : list(cur.get("replicaCanali"))) {
             String canale = Main.str(ch.get("canale"));
@@ -391,7 +466,7 @@ public class Monitor {
         for (Map<String, Object> g : clusters.values()) {
             int online = 0;
             for (Object o : list(g.get("nodi"))) {
-                if ("ONLINE".equals(map(o).get("statoMembro"))) online++;
+                if (STATI_MEMBRO_SANI.contains(Main.str(map(o).get("statoMembro")))) online++;
             }
             g.put("onlineNodi", online);
             // Galera: tutti i nodi scrivono; il numero di membri è quello dichiarato dal cluster
@@ -618,6 +693,7 @@ public class Monitor {
             g.put("totale", info.get("totale"));
             g.put("primario", info.get("primario"));
             g.put("membri", info.get("membri"));
+            g.put("etichetta", info.get("etichetta"));
         }
     }
 
@@ -711,6 +787,43 @@ public class Monitor {
     static String firstLine(String s) {
         int i = s.indexOf('\n');
         return i < 0 ? s : s.substring(0, i);
+    }
+
+    /**
+     * Contesto di un blocco per il messaggio IA su Telegram: nome e host del server (hostname riportato dal
+     * server, non l'indirizzo di rete), motore, topologia e ruolo del nodo, sessione in attesa e bloccante.
+     * Non contiene chiavi, indirizzi IP né l'elenco dei membri con i loro indirizzi.
+     */
+    static String contestoBlocco(String name, Map<String, Object> cur, Map<String, Object> b, Object testa) {
+        try {
+            com.fasterxml.jackson.databind.node.ObjectNode n = Main.JSON.createObjectNode();
+            n.put("server", name);
+            n.put("hostname", Main.str(cur.get("hostname")));
+            n.put("motore", Main.str(cur.get("motore")));
+            n.put("edizione", Main.str(cur.get("edizione")));
+            n.put("versione", Main.str(cur.get("versione")));
+            com.fasterxml.jackson.databind.node.ObjectNode t = n.putObject("topologia");
+            t.put("tipo", Main.str(cur.get("tipo")));
+            t.put("cluster", Main.str(cur.get("cluster")));
+            t.put("ruoloNodo", Main.str(cur.get("membroRuolo")));
+            t.put("statoMembro", Main.str(cur.get("membroStato")));
+            t.put("statoCluster", Main.str(cur.get("clusterStato")));
+            Map<String, Object> info = map(cur.get("clusterInfo"));
+            t.put("membriOnline", Main.str(info.get("online")));
+            t.put("membriTotali", Main.str(info.get("totale")));
+            com.fasterxml.jackson.databind.node.ObjectNode s = n.putObject("blocco");
+            s.put("sessioneInAttesa", Main.str(b.get("ID")));
+            s.put("utente", Main.str(b.get("UTENTE")));
+            s.put("database", Main.str(b.get("DB")));
+            s.put("secondiInAttesa", Main.str(b.get("SECONDI")));
+            s.put("sessioneBloccante", Main.str(b.get("BLOCCANTE_ID")));
+            s.put("testaCatena", Main.str(testa));
+            s.put("queryInAttesa", SpiegaIA.pulisci(Main.str(b.get("QUERY"))));
+            s.put("queryBloccante", SpiegaIA.pulisci(Main.str(b.get("QUERY_BLOCCANTE"))));
+            return Main.JSON.writeValueAsString(n);
+        } catch (Exception e) {
+            return null; // senza contesto la notifica resta quella standard
+        }
     }
 
     static boolean changed(Map<String, Object> a, Map<String, Object> b, String key) {

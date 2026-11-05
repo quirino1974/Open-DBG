@@ -16,6 +16,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -54,7 +55,6 @@ public class Main {
         Siti.init();
         Insight.init();
         int port = Integer.parseInt(env("PORT", "8080"));
-        int pollSeconds = Integer.parseInt(env("POLL_SECONDS", "60"));
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/api", Main::api);
         server.createContext("/", Main::staticFiles);
@@ -77,7 +77,7 @@ public class Main {
         // Insight su uno scheduler separato: un health check lungo non ritarda il rilevamento
         ScheduledExecutorService insight = Executors.newSingleThreadScheduledExecutor();
         insight.scheduleWithFixedDelay(Insight::controllaPianificazione, 120, 300, TimeUnit.SECONDS);
-        System.out.println("Monitor MySQL in ascolto sulla porta " + port + ", rilevamento ogni " + pollSeconds + " s");
+        System.out.println("Monitor MySQL in ascolto sulla porta " + port + ", verifica di raggiungibilità ogni " + Impostazioni.intero("rilevamento.raggiungibilita_secondi") + " s");
     }
 
     // ------------------------------------------------------------------ HTTP
@@ -170,7 +170,7 @@ public class Main {
             // ---- server
             } else if (p.equals("/servers/test") && m.equals("POST")) {
                 richiedeAdmin(me);
-                out = test(readBody(ex));
+                out = test(conPasswordSalvata(readBody(ex)));
             } else if (p.equals("/servers") && m.equals("GET")) {
                 out = listMasked(visibili);
             } else if (p.equals("/servers") && m.equals("POST")) {
@@ -214,6 +214,28 @@ public class Main {
                 if (qs != null && qs.startsWith("ore=")) ore = Math.min(Integer.parseInt(qs.substring(4)), 24 * 30);
                 out = m("ore", ore, "disponibilita", Store.disponibilitaPerOra(ore, visibili),
                         "eventi", Store.eventiPerOra(ore, visibili));
+            } else if (p.equals("/transazioni-bloccate") && m.equals("GET")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                List<Object> righe = new ArrayList<>();
+                for (Map<String, Object> e : Monitor.LATEST.values()) {
+                    String id = String.valueOf(e.get("id"));
+                    if (visibili != null && !visibili.contains(id)) continue;
+                    List<Map<String, Object>> bloc = Monitor.list(Monitor.map(e.get("rep")).get("bloccate"));
+                    boolean terminabile = killAbilitato(id, String.valueOf(e.get("kind")));
+                    for (Map<String, Object> riga : bloc) {
+                        Map<String, Object> x = new LinkedHashMap<>(riga);
+                        x.put("SERVER", e.get("name"));
+                        x.put("SERVER_ID", id);
+                        x.put("TERMINABILE", terminabile);
+                        x.put("TESTA_CATENA", testaCatena(bloc, riga.get("ID")));
+                        righe.add(x);
+                    }
+                }
+                out = m("righe", righe);
+            } else if (p.equals("/transazioni-bloccate/termina") && m.equals("POST")) {
+                richiedi(me, Auth.P_CONFIGURAZIONE);
+                JsonNode b = readBody(ex);
+                out = terminaSessione(b.path("server").asText(), b.path("sessione").asLong(-1));
             } else if (p.equals("/insights") && m.equals("GET")) {
                 richiedi(me, Auth.P_MONITORAGGIO);
                 Map<String, Object> ultimo = Insight.ultimo(visibili);
@@ -230,6 +252,9 @@ public class Main {
                 ex.getResponseHeaders().set("Content-Disposition",
                         "attachment; filename=\"dbguardian-configurazione-" + java.time.LocalDate.now() + ".json\"");
                 out = esporta();
+            } else if (p.equals("/importazione") && m.equals("POST")) {
+                richiedi(me, Auth.P_CONFIGURAZIONE);
+                out = importa(readBody(ex));
             } else if (p.equals("/siti") && m.equals("GET")) {
                 richiedi(me, Auth.P_MONITORAGGIO);
                 out = Siti.elenco();
@@ -252,6 +277,9 @@ public class Main {
                 // Sola lettura per la pagina Help: nessuna modifica, solo i valori correnti
                 richiedi(me, Auth.P_MONITORAGGIO);
                 out = Impostazioni.elenco();
+            } else if (p.equals("/controlli-catalogo") && m.equals("GET")) {
+                richiedi(me, Auth.P_CONFIGURAZIONE);
+                out = Controlli.catalogo();
             } else if (p.equals("/impostazioni") && m.equals("GET")) {
                 richiedi(me, Auth.P_CONFIGURAZIONE);
                 out = Impostazioni.elenco();
@@ -272,6 +300,27 @@ public class Main {
             } else if (p.equals("/ai-config/prova") && m.equals("POST")) {
                 richiedi(me, Auth.P_CONFIGURAZIONE);
                 out = m("ok", true, "risposta", AiConfig.prova());
+            } else if (p.equals("/ai/stato") && m.equals("GET")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                out = m("abilitata", SpiegaIA.abilitata());
+            } else if (p.equals("/ai/evento") && m.equals("POST")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                out = m("risposta", SpiegaIA.spiegaEvento(readBody(ex)));
+            } else if (p.equals("/ai/query/spiega") && m.equals("POST")) {
+                richiedi(me, Auth.P_DIAGNOSTICA);
+                out = m("risposta", SpiegaIA.spiegaQuery(readBody(ex)));
+            } else if (p.equals("/ai/query/suggerisci") && m.equals("POST")) {
+                richiedi(me, Auth.P_DIAGNOSTICA);
+                out = m("risposta", SpiegaIA.suggerisciQuery(readBody(ex)));
+            } else if (p.equals("/ai/incidenti") && m.equals("GET")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                out = m("risposta", SpiegaIA.incidenti(visibili));
+            } else if (p.equals("/ai/domanda") && m.equals("POST")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                out = m("risposta", SpiegaIA.domanda(readBody(ex), visibili));
+            } else if (p.equals("/ai/anomalie") && m.equals("GET")) {
+                richiedi(me, Auth.P_MONITORAGGIO);
+                out = SpiegaIA.anomalie(visibili);
             } else if (p.equals("/telegram-config") && m.equals("GET")) {
                 richiedi(me, Auth.P_CONFIGURAZIONE);
                 out = Telegram.stato();
@@ -391,6 +440,74 @@ public class Main {
     // ------------------------------------------------------------ anagrafica
 
     /**
+     * Importazione di un file esportato da {@link #esporta()}. I server con lo stesso nome vengono aggiornati
+     * (la password attuale resta), gli altri creati senza password: il file non la contiene.
+     * Gli utenti non si importano: il file non contiene le loro password, quindi si creano dalla sezione Utenti.
+     * Ogni server è indipendente: un errore su uno non blocca gli altri.
+     */
+    static Map<String, Object> importa(JsonNode b) throws SQLException {
+        if (b == null || !b.isObject() || !b.path("server").isArray()) {
+            throw new IllegalArgumentException("File non valido: manca l'elenco dei server. Usare un file esportato da dbguardian.");
+        }
+        int creati = 0;
+        int aggiornati = 0;
+        List<String> errori = new ArrayList<>();
+        List<String> senzaPassword = new ArrayList<>();
+        ArrayNode esistenti = loadServers();
+        for (JsonNode s : b.get("server")) {
+            String nome = text(s, "nome");
+            try {
+                ObjectNode in = JSON.createObjectNode();
+                in.put("name", nome);
+                in.put("kind", text(s, "tipo"));
+                in.put("host", text(s, "host"));
+                if (s.has("porta")) in.put("port", s.get("porta").asInt());
+                in.put("user", text(s, "utente"));
+                in.put("database", text(s, "database"));
+                in.put("ambiente", text(s, "ambiente"));
+                in.put("galeraCluster", text(s, "galeraCluster"));
+                in.put("resourceMode", text(s, "sorgenteRisorse"));
+                in.put("metricsUrl", text(s, "metricsUrl"));
+                in.put("controlli", text(s, "controlli"));
+                if (s.has("insight")) in.put("insight", s.get("insight").asBoolean(false));
+                if (s.has("telegram")) in.put("telegram", s.get("telegram").asBoolean(false));
+                String idEsistente = null;
+                for (JsonNode e : esistenti) {
+                    if (nome.equals(text(e, "name"))) idEsistente = e.get("id").asText();
+                }
+                if (idEsistente != null) {
+                    update(idEsistente, in);
+                    aggiornati++;
+                } else {
+                    create(in);
+                    creati++;
+                    senzaPassword.add(nome);
+                }
+            } catch (Exception e) {
+                errori.add(nome + ": " + e.getMessage());
+            }
+        }
+        Map<String, String> parametri = new LinkedHashMap<>();
+        for (JsonNode p : b.path("parametri")) {
+            parametri.put(text(p, "chiave"), text(p, "valore"));
+        }
+        int parametriAggiornati = 0;
+        if (!parametri.isEmpty()) {
+            try {
+                Impostazioni.salva(parametri);
+                parametriAggiornati = parametri.size();
+            } catch (IllegalArgumentException e) {
+                errori.add("parametri: " + e.getMessage());
+            }
+        }
+        Store.logConfig("IMPORT", "configurazione", "server creati " + creati + ", aggiornati " + aggiornati
+                + ", parametri " + parametriAggiornati + ", errori " + errori.size());
+        return m("serverCreati", creati, "serverAggiornati", aggiornati, "serverSenzaPassword", senzaPassword,
+                "parametriAggiornati", parametriAggiornati, "utentiNonImportati", b.path("utenti").size(),
+                "errori", errori);
+    }
+
+    /**
      * Configurazione completa: server, utenti (con i server assegnati) e parametri di rilevamento.
      * Le password non vengono esportate né in chiaro né come hash.
      */
@@ -416,6 +533,8 @@ public class Main {
             c.put("metricsUrl", text(s, "metricsUrl"));
             c.put("controlli", text(s, "controlli"));
             c.put("insight", s.path("insight").asBoolean(true));
+            c.put("telegram", s.path("telegram").asBoolean(false));
+            c.put("sospeso", s.path("sospeso").asBoolean(false));
             server.add(c);
         }
         out.put("server", server);
@@ -496,6 +615,7 @@ public class Main {
             if (visibili != null && !visibili.contains(s.get("id").asText())) continue;
             ObjectNode c = ((ObjectNode) s).deepCopy();
             c.put("password", "********");
+            if (!c.path("killPassword").asText("").isEmpty()) c.put("killPassword", "********");
             c.put("jdbcUrl", jdbcUrl(s));
             out.add(c);
         }
@@ -516,7 +636,8 @@ public class Main {
         if (name.isEmpty() || host.isEmpty() || user.isEmpty()) {
             throw new IllegalArgumentException("Nome, host e utente sono obbligatori");
         }
-        int port = in.has("port") && !in.get("port").asText().isBlank() ? in.get("port").asInt() : 3306;
+        int portaPredefinita = text(in, "kind").equals("mongodb") ? 27017 : 3306;
+        int port = in.has("port") && !in.get("port").asText().isBlank() ? in.get("port").asInt() : portaPredefinita;
         if (port <= 0 || port > 65535) throw new IllegalArgumentException("Porta non valida");
         String password = text(in, "password");
         if (password.isEmpty() && existing != null) password = existing.get("password").asText();
@@ -527,10 +648,16 @@ public class Main {
         o.put("port", port);
         o.put("user", user);
         o.put("password", password);
+        // Utenza per terminare le sessioni: la password vuota mantiene quella salvata
+        String killPassword = text(in, "killPassword");
+        if (killPassword.isEmpty() && existing != null && existing.has("killPassword")) killPassword = existing.get("killPassword").asText();
+        o.put("killUser", text(in, "killUser"));
+        o.put("killPassword", killPassword);
         o.put("database", text(in, "database"));
         String kind = text(in, "kind");
         o.put("kind", kind.equals("router") ? "router" : kind.equals("monitor") ? "monitor"
-                : kind.equals("postgres") ? "postgres" : kind.equals("sqlserver") ? "sqlserver" : "server");
+                : kind.equals("postgres") ? "postgres" : kind.equals("sqlserver") ? "sqlserver"
+                : kind.equals("mongodb") ? "mongodb" : "server");
         String mode = text(in, "resourceMode");
         o.put("resourceMode", mode.equals("host") || mode.equals("none") ? mode : "container");
         o.put("metricsUrl", text(in, "metricsUrl"));
@@ -544,6 +671,14 @@ public class Main {
         boolean insight = in.has("insight") && !in.get("insight").isNull() ? in.get("insight").asBoolean()
                 : existing != null && existing.has("insight") ? existing.get("insight").asBoolean() : false;
         o.put("insight", insight);
+        // Telegram per server: se il campo manca si mantiene il valore attuale; un server nuovo nasce con le notifiche disattivate
+        boolean telegram = in.has("telegram") && !in.get("telegram").isNull() ? in.get("telegram").asBoolean()
+                : existing != null && existing.has("telegram") ? existing.get("telegram").asBoolean() : false;
+        o.put("telegram", telegram);
+        // Sospensione: se il campo manca si mantiene il valore attuale; un server nuovo nasce attivo
+        boolean sospeso = in.has("sospeso") && !in.get("sospeso").isNull() ? in.get("sospeso").asBoolean()
+                : existing != null && existing.has("sospeso") && existing.get("sospeso").asBoolean();
+        o.put("sospeso", sospeso);
         String ambiente = text(in, "ambiente");
         if (!ambiente.isEmpty() && !AMBIENTI.contains(ambiente)) {
             throw new IllegalArgumentException("Ambiente non valido: usare collaudo, certificazione o produzione");
@@ -603,6 +738,7 @@ public class Main {
     static ObjectNode maskedCopy(JsonNode s) {
         ObjectNode c = ((ObjectNode) s).deepCopy();
         c.put("password", "********");
+        if (!c.path("killPassword").asText("").isEmpty()) c.put("killPassword", "********");
         c.put("jdbcUrl", jdbcUrl(s));
         return c;
     }
@@ -618,6 +754,10 @@ public class Main {
 
     static String jdbcUrl(JsonNode s) {
         String db = text(s, "database");
+        if (isMongo(s)) {
+            // Solo informativo: MongoDB non usa JDBC. Nessuna credenziale nell'URL.
+            return "mongodb://" + s.get("host").asText() + ":" + s.get("port").asInt() + "/";
+        }
         if ("sqlserver".equals(text(s, "kind"))) {
             return "jdbc:sqlserver://" + s.get("host").asText() + ":" + s.get("port").asInt()
                     + ";encrypt=true;trustServerCertificate=true;loginTimeout=5;"
@@ -642,7 +782,14 @@ public class Main {
      * Controllo selezionato per il server. Se nessun controllo è selezionato esplicitamente (campo vuoto)
      * valgono tutti i controlli tipici della tecnologia.
      */
+    /** Monitoraggio sospeso per il server in anagrafica. */
+    static boolean isSospeso(JsonNode s) {
+        return s != null && s.path("sospeso").asBoolean(false);
+    }
+
     static boolean controllo(JsonNode s, String chiave) {
+        // Monitoraggio sospeso: nessun controllo del server, né nel rilevamento né nell'Insight
+        if (isSospeso(s)) return false;
         String sel = text(s, "controlli");
         if (sel.isBlank()) return true;
         if (sel.equals("nessuno")) return false;
@@ -650,12 +797,43 @@ public class Main {
         return false;
     }
 
+    /**
+     * Vero se il testo contiene più di un'istruzione. Un punto e virgola dentro un testo tra apici, un
+     * identificatore tra virgolette o parentesi quadre, o un commento non separa istruzioni e non conta.
+     */
+    static boolean piuIstruzioni(String sql) {
+        String t = sql.replaceAll("(?s)/\\*.*?\\*/", " ").replaceAll("--[^\\n]*", " ")
+                .replaceAll("'(?:[^']|'')*'", "''")
+                .replaceAll("\"(?:[^\"]|\"\")*\"", "\"\"")
+                .replaceAll("`(?:[^`]|``)*`", "``")
+                .replaceAll("\\[(?:[^\\]]|\\]\\])*\\]", "[]");
+        return t.replaceAll(";+\\s*$", "").contains(";");
+    }
+
     static boolean isPostgres(JsonNode s) {
         return "postgres".equals(text(s, "kind"));
     }
 
+    static boolean isMongo(JsonNode s) {
+        return "mongodb".equals(text(s, "kind"));
+    }
+
+    /**
+     * Test di un server già in anagrafica: se la password nel form è vuota, come in modifica con "invariata se vuota",
+     * usa quella salvata. Senza id (nuovo server) il valore arriva così com'è.
+     */
+    static JsonNode conPasswordSalvata(JsonNode in) throws SQLException {
+        String id = text(in, "id");
+        if (id.isEmpty() || !text(in, "password").isEmpty()) return in;
+        JsonNode salvato = find(id);
+        ObjectNode copia = ((ObjectNode) in).deepCopy();
+        copia.put("password", text(salvato, "password"));
+        return copia;
+    }
+
     static Map<String, Object> test(JsonNode cfg) {
         long t0 = System.currentTimeMillis();
+        if (isMongo(cfg)) return MongoReport.test(cfg);
         if (isPostgres(cfg)) {
             try (Connection c = open(cfg)) {
                 Map<String, Object> r = q(c, "SELECT version() AS v").get(0);
@@ -727,6 +905,90 @@ public class Main {
             return q(c, "SELECT " + var + " AS v").get(0).get("v");
         } catch (SQLException e) {
             return null;
+        }
+    }
+
+    /**
+     * Il kill è consentito solo se Telegram è attivo nella configurazione generale e per il server in anagrafica,
+     * e per i tipi che hanno un comando di terminazione (MySQL, MariaDB, SQL Server, PostgreSQL).
+     */
+    static boolean killAbilitato(String serverId, String kind) throws SQLException {
+        return !"mongodb".equals(kind) && Telegram.abilitato() && Telegram.serverInviaTelegram(serverId);
+    }
+
+    /** Testa della catena di blocchi: si segue il bloccante finché è a sua volta in attesa nell'elenco. */
+    static Object testaCatena(List<Map<String, Object>> bloc, Object partenza) {
+        Object corrente = partenza;
+        java.util.Set<String> viste = new java.util.HashSet<>();
+        while (corrente != null && viste.add(String.valueOf(corrente))) {
+            Object successivo = null;
+            for (Map<String, Object> r : bloc) {
+                if (String.valueOf(r.get("ID")).equals(String.valueOf(corrente))) successivo = r.get("BLOCCANTE_ID");
+            }
+            if (successivo == null) break;
+            corrente = successivo;
+        }
+        return corrente;
+    }
+
+    /** Termina la sessione testa di una catena di blocchi. Solo se la sessione blocca altre e ne è la testa. */
+    static Map<String, Object> terminaSessione(String serverId, long sessione) throws SQLException {
+        if (sessione <= 0) throw new IllegalArgumentException("Sessione non valida");
+        Map<String, Object> e = Monitor.LATEST.get(serverId);
+        if (e == null) throw new IllegalArgumentException("Server non rilevato");
+        String kind = String.valueOf(e.get("kind"));
+        if (!killAbilitato(serverId, kind)) {
+            throw new IllegalStateException("Termina sessione disponibile solo con Telegram attivo nella configurazione generale e per questo server");
+        }
+        List<Map<String, Object>> bloc = Monitor.list(Monitor.map(e.get("rep")).get("bloccate"));
+        boolean blocca = bloc.stream().anyMatch(r -> String.valueOf(r.get("BLOCCANTE_ID")).equals(String.valueOf(sessione)));
+        if (!blocca) throw new IllegalArgumentException("La sessione " + sessione + " non blocca altre sessioni");
+        Object testa = testaCatena(bloc, sessione);
+        if (!String.valueOf(testa).equals(String.valueOf(sessione))) {
+            throw new IllegalArgumentException("Termina la testa della catena: sessione " + testa);
+        }
+        JsonNode cfg = null;
+        for (JsonNode s : loadServers()) {
+            if (text(s, "id").equals(serverId)) cfg = s;
+        }
+        if (cfg == null) throw new IllegalArgumentException("Server non trovato in anagrafica");
+        String killUser = text(cfg, "killUser");
+        if (killUser.isEmpty()) throw new IllegalStateException("Utenza per terminare le sessioni non configurata per questo server");
+        ObjectNode killCfg = ((ObjectNode) cfg).deepCopy();
+        killCfg.put("user", killUser);
+        killCfg.put("password", text(cfg, "killPassword"));
+        // Il kill non richiede un database utente: SQL Server si collega a master, dove l'utenza di kill ha accesso
+        if ("sqlserver".equals(kind)) killCfg.put("database", "master");
+        try (Connection c = open(killCfg)) {
+            if ("postgres".equals(kind)) {
+                // pg_terminate_backend accetta un integer (pid): il cast evita l'errore "function ... (bigint) does not exist"
+                try (PreparedStatement ps = c.prepareStatement("SELECT pg_terminate_backend(CAST(? AS integer))")) {
+                    ps.setLong(1, sessione);
+                    ps.executeQuery();
+                }
+            } else {
+                try (Statement st = c.createStatement()) {
+                    st.execute("KILL " + sessione);
+                }
+            }
+        }
+        String nome = String.valueOf(e.get("name"));
+        Store.logConfig("KILL", nome, "sessione " + sessione + " terminata dal monitor");
+        Store.event(serverId, nome, null, "INFO", "SESSIONE_TERMINATA", "Sessione " + sessione + " terminata dal monitor");
+        return m("ok", true, "messaggio", "Sessione " + sessione + " terminata su " + nome);
+    }
+
+    /** Sessioni in attesa di un lock InnoDB. MySQL: sys.innodb_lock_waits. MariaDB non ha lo schema sys: information_schema. */
+    static List<Map<String, Object>> bloccateMysql(Connection c) throws SQLException {
+        try {
+            return q(c, "SELECT waiting_pid AS ID, waiting_query AS QUERY, wait_age_secs AS SECONDI, blocking_pid AS BLOCCANTE_ID, "
+                    + "blocking_query AS QUERY_BLOCCANTE FROM sys.innodb_lock_waits ORDER BY wait_age_secs DESC LIMIT 100");
+        } catch (SQLException e) {
+            return q(c, "SELECT rt.trx_mysql_thread_id AS ID, rt.trx_query AS QUERY, "
+                    + "TIMESTAMPDIFF(SECOND, rt.trx_wait_started, NOW()) AS SECONDI, bt.trx_mysql_thread_id AS BLOCCANTE_ID, "
+                    + "bt.trx_query AS QUERY_BLOCCANTE FROM information_schema.INNODB_LOCK_WAITS w "
+                    + "JOIN information_schema.INNODB_TRX rt ON rt.trx_id = w.requesting_trx_id "
+                    + "JOIN information_schema.INNODB_TRX bt ON bt.trx_id = w.blocking_trx_id LIMIT 100");
         }
     }
 
@@ -839,6 +1101,7 @@ public class Main {
      */
     static Map<String, Object> report(JsonNode cfg, boolean pesante, Map<String, Object> precedente) {
         if (isPostgres(cfg)) return PgReport.report(cfg, pesante, precedente);
+        if (isMongo(cfg)) return MongoReport.report(cfg, pesante, precedente);
         Map<String, String> errors = new LinkedHashMap<>();
         Map<String, Object> r = new LinkedHashMap<>();
         r.put("generatoAlle", java.time.Instant.now().toString());
@@ -972,6 +1235,9 @@ public class Main {
                             + "AND esc.SQL_TEXT IS NOT NULL "
                             + "ORDER BY esc.TIMER_WAIT DESC, esc.ROWS_EXAMINED DESC LIMIT " + Impostazioni.intero("query.attive_limite"))));
 
+            // Transazioni bloccate: sessioni in attesa di un lock e sessione che lo tiene
+            r.put("bloccate", !controllo(cfg, "transazioni_bloccate") ? null : safe(errors, "bloccate", () -> bloccateMysql(c)));
+
             // 8. Query più lente
             r.put("queryLente", !controllo(cfg, "query_lente") ? null : safe(errors, "queryLente", () -> q(c,
                     "SELECT SCHEMA_NAME, LEFT(DIGEST_TEXT, 300) AS QUERY, COUNT_STAR AS ESECUZIONI, "
@@ -1002,7 +1268,7 @@ public class Main {
                     + "(SELECT ROUND(SUM(DATA_LENGTH + INDEX_LENGTH) / 1048576) FROM information_schema.TABLES t WHERE t.TABLE_SCHEMA = SCHEMA_NAME) AS dimensioneMB "
                     + "FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN (" + SYSTEM_SCHEMAS + ") ORDER BY SCHEMA_NAME")));
 
-            // 8b. Risorse: CPU e memoria del container (Docker) e memoria allocata da mysqld (SQL)
+            // 8b. Risorse: CPU e memoria dell'host (solo modalità host, node_exporter) e memoria allocata da mysqld
 if (controllo(cfg, "risorse")) {
             Map<String, Object> risorse = new LinkedHashMap<>();
             try {
@@ -1226,7 +1492,7 @@ if (controllo(cfg, "risorse")) {
         sql = sql.replaceAll("SQL_TSI_([A-Z]+)", "$1");
         // Il digest separa il nome di funzione dalla parentesi (es. DATE_ADD ( ...): MySQL non lo accetta
         sql = sql.replaceAll("(\\w)\\s+\\(", "$1(");
-        if (sql.contains(";")) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
+        if (piuIstruzioni(sql)) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
         String up = sql.toUpperCase();
         if (!(up.startsWith("SELECT") || up.startsWith("WITH") || up.startsWith("INSERT")
                 || up.startsWith("REPLACE") || up.startsWith("UPDATE") || up.startsWith("DELETE"))) {
@@ -1276,7 +1542,7 @@ if (controllo(cfg, "risorse")) {
         // Con un tipo davanti (TIMESTAMP $1, INTERVAL $2) NULL non è un'espressione valida: si usa un cast tipizzato
         String base = sql.trim()
                 .replaceAll("(?i)\\b(TIMESTAMPTZ|TIMESTAMP|DATE|TIME|INTERVAL)\\s+\\$\\d+", "CAST(NULL AS $1)");
-        if (base.contains(";")) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
+        if (piuIstruzioni(base)) throw new IllegalArgumentException("Sono ammesse solo istruzioni singole");
         ObjectNode cfg = ((ObjectNode) s).deepCopy();
         if (!schema.isEmpty()) cfg.put("database", schema);
         // I parametri senza tipo (es. dentro generate_series) non si deducono dal digest: si provano tipi comuni
@@ -1284,7 +1550,38 @@ if (controllo(cfg, "risorse")) {
         String[] tentativi = base.matches("(?s).*\\$\\d+.*") ? new String[]{"NULL", "int", "timestamp", "text", "numeric"} : new String[]{"NULL"};
         String originale = null, lettura = null, json = null, tipoUsato = null, testo = "";
         String errore = null;
-        for (String tipo : tentativi) {
+        // Prima strada: PostgreSQL deduce il tipo di ogni parametro dal contesto (es. "codice LIKE $1" dà text)
+        // con PREPARE, poi EXPLAIN EXECUTE con valori NULL. Funziona anche per i parametri usati nel digest.
+        if (base.matches("(?s).*\\$\\d+.*")) {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("\\$(\\d+)").matcher(base);
+            int max = 0;
+            while (m.find()) max = Math.max(max, Integer.parseInt(m.group(1)));
+            String argomenti = String.join(",", java.util.Collections.nCopies(max, "NULL"));
+            String lettPrep = parteDiLettura(base);
+            try (Connection c = open(cfg); Statement st = c.createStatement()) {
+                st.execute("PREPARE mon_piano AS " + lettPrep);
+                try {
+                    String j = str(q(c, "EXPLAIN (FORMAT JSON) EXECUTE mon_piano(" + argomenti + ")").get(0).values().iterator().next());
+                    StringBuilder tb = new StringBuilder();
+                    for (Map<String, Object> riga : q(c, "EXPLAIN EXECUTE mon_piano(" + argomenti + ")")) {
+                        tb.append(str(riga.values().iterator().next())).append('\n');
+                    }
+                    json = j;
+                    testo = tb.toString();
+                    originale = base;
+                    lettura = lettPrep;
+                    tipoUsato = "NULL";
+                } finally {
+                    st.execute("DEALLOCATE mon_piano");
+                }
+            } catch (SQLException e) {
+                errore = e.getMessage() == null ? "" : e.getMessage();
+            }
+        }
+        // Errore della prima strada: se anche la riserva fallisce, è il motivo più utile da mostrare
+        final String errorePreparato = json == null ? errore : null;
+        // Seconda strada (riserva): parametri sostituiti con NULL o con un tipo comune
+        if (json == null) for (String tipo : tentativi) {
             String cand = tipo.equals("NULL") ? base.replaceAll("\\$\\d+", "NULL") : base.replaceAll("\\$\\d+", "CAST(NULL AS " + tipo + ")");
             String lett = parteDiLettura(cand);
             try (Connection c = open(cfg)) {
@@ -1308,7 +1605,7 @@ if (controllo(cfg, "risorse")) {
                 throw new SQLException("Piano non calcolabile: PostgreSQL non riesce a dedurre il tipo dei parametri "
                         + "usati dentro una funzione (es. generate_series), e il digest non conserva i valori. Errore: " + errore);
             }
-            throw new SQLException("Piano non calcolabile: " + errore);
+            throw new SQLException("Piano non calcolabile: " + (errorePreparato != null ? errorePreparato : errore));
         }
         String up = originale.toUpperCase();
         String nota = lettura.equals(originale) ? null

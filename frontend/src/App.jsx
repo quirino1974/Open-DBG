@@ -1,7 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { CHECKS } from './checks.js';
 
-const EMPTY_FORM = { id: '', name: '', kind: 'server', host: '', port: 3306, user: '', password: '', database: '', galeraCluster: '', ambiente: '', sito: '', insight: false };
+const EMPTY_FORM = { id: '', name: '', kind: 'server', host: '', port: 3306, user: '', password: '', database: '', galeraCluster: '', ambiente: '', sito: '', insight: false, telegram: false, sospeso: false, killUser: '', killPassword: '' };
 
 /* Ambienti dei server: etichetta e colore. Vuoto = non definito. */
 const AMBIENTI = [
@@ -42,6 +41,20 @@ function fmtData(v) {
   return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString('it-IT', { dateStyle: 'short', timeStyle: 'medium' });
 }
 
+/* Unità al singolare quando il valore è 1 (1 giorno, 1 ora). */
+function unitaDi(valore, unita) {
+  if (!unita) return '';
+  if (Number(valore) === 1 && unita === 'giorni') return 'giorno';
+  if (Number(valore) === 1 && unita === 'ore') return 'ora';
+  return unita;
+}
+
+/* Prima frase di un messaggio d'errore, lunga al massimo 140 caratteri: il testo completo resta nel dettaglio tecnico. */
+function sintesiErrore(testo) {
+  const prima = String(testo).split(/\r?\n/)[0].split(/\.\s/)[0];
+  return prima.length > 140 ? `${prima.slice(0, 137)}…` : prima;
+}
+
 function formatBytes(b) {
   if (b === null || b === undefined) return '—';
   const n = Number(b);
@@ -68,7 +81,7 @@ function Table({ rows, columns, empty = 'Nessun dato', onRowClick }) {
         <thead><tr>{columns.map((c) => <th key={c.key}>{c.label}</th>)}</tr></thead>
         <tbody>
           {rows.map((row, i) => (
-            <tr key={i} className={onRowClick ? 'clickable' : ''} onClick={() => onRowClick && onRowClick(row)}>
+            <tr key={i} {...accessibileSeCliccabile(onRowClick && (() => onRowClick(row)))}>
               {columns.map((c) => (
                 <td key={c.key}>{c.render ? c.render(row[c.key], row) : fmt(row[c.key])}</td>
               ))}
@@ -78,6 +91,17 @@ function Table({ rows, columns, empty = 'Nessun dato', onRowClick }) {
       </table>
     </div>
   );
+}
+
+/* Riga di tabella cliccabile anche da tastiera (Invio o Spazio), con il fuoco visibile. */
+function accessibileSeCliccabile(azione) {
+  if (!azione) return {};
+  return {
+    className: 'clickable',
+    tabIndex: 0,
+    onClick: azione,
+    onKeyDown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); azione(); } },
+  };
 }
 
 function Section({ title, children, right }) {
@@ -129,6 +153,9 @@ function ServerForm({ initial, onSaved, onCancel }) {
   });
   const [siti, setSiti] = useState([]);
   useEffect(() => { api('/siti').then(setSiti).catch(() => setSiti([])); }, []);
+  // Catalogo dei controlli per tecnologia, dal backend (unica fonte): tecnologia -> [{k, l, nota}]
+  const [catalogo, setCatalogo] = useState(null);
+  useEffect(() => { api('/controlli-catalogo').then(setCatalogo).catch(() => setCatalogo({})); }, []);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
 
@@ -170,12 +197,14 @@ function ServerForm({ initial, onSaved, onCancel }) {
             // porta predefinita secondo il tipo, solo se non è stata cambiata a mano
             const porta = k === 'postgres' && form.port === 3306 ? 5432
               : k === 'sqlserver' && (form.port === 3306 || form.port === 5432) ? 1433
-              : k !== 'postgres' && k !== 'sqlserver' && (form.port === 5432 || form.port === 1433) ? 3306 : form.port;
+              : k === 'mongodb' && [3306, 5432, 1433].includes(form.port) ? 27017
+              : !['postgres', 'sqlserver', 'mongodb'].includes(k) && [5432, 1433, 27017].includes(form.port) ? 3306 : form.port;
             setForm({ ...form, kind: k, port: porta });
           }}>
             <option value="server">Server MySQL / MariaDB</option>
             <option value="postgres">PostgreSQL</option>
             <option value="sqlserver">SQL Server</option>
+            <option value="mongodb">MongoDB (replica set o standalone)</option>
             <option value="router">Endpoint router</option>
             <option value="monitor">Database del monitor</option>
           </select>
@@ -210,9 +239,8 @@ function ServerForm({ initial, onSaved, onCancel }) {
             title="Nome del cluster Galera (wsrep_cluster_name): i nodi con lo stesso nome formano un insieme" />
         </label>
         <label>
-          Sorgente risorse (CPU e memoria)
-          <select value={form.resourceMode || 'container'} onChange={set('resourceMode')}>
-            <option value="container">Container Docker</option>
+          Rilevazione CPU e memoria dell'host
+          <select value={form.resourceMode === 'host' ? 'host' : 'none'} onChange={set('resourceMode')}>
             <option value="host">Host fisico (node_exporter)</option>
             <option value="none">Nessuna</option>
           </select>
@@ -222,19 +250,45 @@ function ServerForm({ initial, onSaved, onCancel }) {
             onChange={(e) => setForm({ ...form, insight: e.target.checked })} />
           Includi nel report Insight (health check giornaliero)
         </label>
+        <label className="checkbox-riga">
+          <input type="checkbox" checked={form.telegram !== false}
+            onChange={(e) => setForm({ ...form, telegram: e.target.checked })} />
+          Invia gli eventi di questo server su Telegram (solo se Telegram è attivo nella configurazione generale)
+        </label>
+        <label className="checkbox-riga">
+          <input type="checkbox" checked={!!form.sospeso}
+            onChange={(e) => setForm({ ...form, sospeso: e.target.checked })} />
+          Sospendi monitoraggio: nessuna connessione, nessun controllo, nessun report Insight e nessuna notifica Telegram per questo server
+        </label>
+        <fieldset className="controlli-server">
+          <legend>Utenza per terminare le sessioni bloccanti</legend>
+          <p className="muted small">
+            Facoltativa. Serve solo per "Termina sessione" su Telegram e nella pagina Transazioni bloccate. Usare un utente
+            con il solo permesso di terminare sessioni: SQL Server ALTER ANY CONNECTION, MySQL/MariaDB CONNECTION_ADMIN,
+            PostgreSQL pg_signal_backend. Lasciare la password vuota per mantenere quella salvata.
+          </p>
+          <label>Utente
+            <input value={form.killUser || ''} onChange={(e) => setForm({ ...form, killUser: e.target.value })} />
+          </label>
+          <label>Password
+            <input type="password" autoComplete="off" value={form.killPassword || ''} onChange={(e) => setForm({ ...form, killPassword: e.target.value })} />
+          </label>
+        </fieldset>
         {form.resourceMode === 'host' && (
           <label>
             URL metriche host
             <input value={form.metricsUrl || ''} onChange={set('metricsUrl')} placeholder="http://nodo-fisico:9100/metrics" />
           </label>
         )}
-        {CONTROLLI_PER_TECNOLOGIA[form.kind] && (
+        {catalogo && catalogo[form.kind] && (
           <fieldset className="controlli-server">
             <legend>Controlli da eseguire</legend>
-            <p className="muted small">Solo i controlli selezionati vengono eseguiti su questo server.</p>
-            {CONTROLLI_PER_TECNOLOGIA[form.kind].map((c) => {
+            <p className="muted small">
+              I controlli deselezionati non vengono eseguiti su questo server, né dal rilevamento né nel report Insight. Versione e configurazione del report non dipendono da questa scelta.
+            </p>
+            {catalogo[form.kind].map((c) => {
               // Valore sempre come elenco: vuoto/assente = tutti, "nessuno" = nessuno, testo = chiavi separate da virgola
-              const tutti = CONTROLLI_PER_TECNOLOGIA[form.kind].map((x) => x.k);
+              const tutti = catalogo[form.kind].map((x) => x.k);
               const cv = form.controlli;
               const attivi = Array.isArray(cv) ? cv
                 : typeof cv === 'string' && cv.trim() !== '' ? (cv === 'nessuno' ? [] : cv.split(',').map((x) => x.trim()))
@@ -245,7 +299,10 @@ function ServerForm({ initial, onSaved, onCancel }) {
                     onChange={(e) => setForm({ ...form, controlli: e.target.checked
                       ? [...attivi.filter((x) => x !== c.k), c.k]
                       : attivi.filter((x) => x !== c.k) })} />
-                  {c.l}
+                  <span>
+                    {c.l}
+                    {c.nota && <span className="muted small"> ({c.nota})</span>}
+                  </span>
                 </label>
               );
             })}
@@ -309,7 +366,8 @@ function ConfigTab({ onChanged }) {
           { key: 'ambiente', label: 'Ambiente', render: (v) => <AmbienteBadge valore={v} /> },
           { key: 'sito', label: 'Sito', render: (v) => v || '—' },
           { key: 'insight', label: 'Insight', render: (v) => (v ? 'Sì' : '—') },
-          { key: 'kind', label: 'Tipo', render: (v) => (v === 'router' ? 'Endpoint router' : v === 'monitor' ? 'Database del monitor' : v === 'postgres' ? 'PostgreSQL' : v === 'sqlserver' ? 'SQL Server' : 'Server MySQL / MariaDB') },
+          { key: 'sospeso', label: 'Monitoraggio', render: (v) => (v ? <span className="bad-text">Sospeso</span> : 'Attivo') },
+          { key: 'kind', label: 'Tipo', render: (v) => (v === 'router' ? 'Endpoint router' : v === 'monitor' ? 'Database del monitor' : v === 'postgres' ? 'PostgreSQL' : v === 'sqlserver' ? 'SQL Server' : v === 'mongodb' ? 'MongoDB' : 'Server MySQL / MariaDB') },
           { key: 'jdbcUrl', label: 'JDBC', render: (v) => <code className="jdbc">{v}</code> },
           { key: 'user', label: 'Utente' },
           { key: 'id', label: 'Test', render: (v, row) => {
@@ -399,77 +457,6 @@ function groupReplicas(nodi) {
   return { sets, resto: nodi.filter((n) => !usati.has(n.id)) };
 }
 
-function NodeCard({ node, onOpen, selected, role }) {
-  const ghost = node.kind === 'non-in-anagrafica';
-  const state = node.up === false ? 'down' : node.up === null || node.up === undefined ? 'wait' : 'up';
-  return (
-    <button
-      type="button"
-      className={`node ${state} ${ghost ? 'ghost' : ''} ${selected ? 'selected' : ''} ${role === 'source' ? 'source' : ''}`}
-      onClick={() => node.id && onOpen(node)}
-      disabled={!node.id}
-    >
-      <div className="node-head">
-        <span className="node-title"><EngineIcon engine={node.motore} /><strong>{node.name}</strong>
-          {role === 'source' && <span className="role-tag source">sorgente</span>}
-          {role === 'replica' && <span className="role-tag replica">replica</span>}
-        </span>
-        {state === 'down' && <span className="badge bad">GIÙ</span>}
-        {state === 'wait' && <span className="badge neutral">in attesa</span>}
-        {state === 'up' && <Badge value={node.statoMembro || 'ONLINE'} />}
-      </div>
-      <div className="muted">{node.host}:{node.port}</div>
-      <div className="node-meta">
-        <span>Ruolo: <Badge value={node.ruolo || node.tipo || '—'} /></span>
-        {node.versione && <span>Versione: {node.versione}</span>}
-        {node.edizione && <span>{node.edizione}</span>}
-      </div>
-      {state === 'up' && (
-        <div className="node-meta muted">
-          <span>CPU: {node.cpuPercent != null ? `${node.cpuPercent}%` : '—'}</span>
-          <span>Memoria: {node.memUsedBytes != null ? formatBytes(node.memUsedBytes) : '—'}</span>
-          <span>Relay log: {formatBytes(node.relayLogBytes)}</span>
-          <span>Query attive: {fmt(node.queryAttive)}</span>
-        </div>
-      )}
-      {state === 'down' && <div className="bad-text small">{node.errore}</div>}
-      {ghost && <div className="muted small">Membro del cluster non registrato in anagrafica</div>}
-    </button>
-  );
-}
-
-function ClusterCard({ group, onOpen, selectedId }) {
-  const stato = group.stato || 'sconosciuto';
-  return (
-    <section className="set cluster-set">
-      <div className="set-head">
-        <div>
-          <div className="set-title"><h3>Cluster {group.nome}</h3><span className="set-kind">{group.galera ? 'Galera Cluster' : 'InnoDB Cluster'}</span></div>
-          <span className="muted">{group.galera ? 'multi-primario · tutti i nodi scrivono' : `primario ${fmt(group.primario)}`}</span>
-        </div>
-        <div className="cluster-stat">
-          <Badge value={stato} />
-          <strong>{group.onlineNodi ?? 0}/{group.nodi?.length ?? 0} online</strong>
-        </div>
-      </div>
-      <div className="topo-wrap">
-        <ClusterTopology group={group} onOpen={onOpen} selectedId={selectedId} />
-      </div>
-    </section>
-  );
-}
-
-/* Indicazione sotto la tabella delle query: solo per chi può aprire il piano. */
-function PianoHint() {
-  const permessi = useContext(PermessiContext);
-  return (
-    <p className="muted small">
-      Ordinate per tempo di esecuzione, poi per righe esaminate.
-      {permessi.includes('diagnostica') ? ' Clicca una query per il piano.' : ' Il piano di esecuzione richiede il profilo operatore.'}
-    </p>
-  );
-}
-
 /* Query attive ordinate per consumo; il clic apre il piano di esecuzione. */
 /* Il piano di esecuzione richiede il permesso diagnostica: senza, la tabella non è cliccabile. */
 function QueryTable({ rows, onPick, showServer = false }) {
@@ -488,7 +475,7 @@ function QueryTable({ rows, onPick, showServer = false }) {
         </thead>
         <tbody>
           {rows.map((q, i) => (
-            <tr key={i} className={apriPiano ? 'clickable' : ''} onClick={() => apriPiano && apriPiano(q)}>
+            <tr key={i} {...accessibileSeCliccabile(apriPiano && (() => apriPiano(q)))}>
               {showServer && <td>{q.server}</td>}
               <td>{fmt(q.DB)}</td>
               <td>{fmt(q.UTENTE)}</td>
@@ -802,6 +789,75 @@ function ExplainPanel({ plan, onClose }) {
   );
 }
 
+/* Funzioni IA on demand. Ogni pulsante "AI" chiama il backend e mostra il testo nella cella o nel pannello.
+   Se l'IA è disabilitata il backend risponde con "Abilitare AI per usare le funzioni", che viene mostrato così com'è. */
+function AiRun({ etichetta = 'AI', titolo, chiama, onAttesa }) {
+  const [stato, setStato] = useState({ aperto: false, attesa: false, testo: '', errore: '' });
+  async function esegui(e) {
+    e.stopPropagation();
+    if (stato.attesa) return;
+    setStato({ aperto: true, attesa: true, testo: '', errore: '' });
+    if (onAttesa) onAttesa(1);
+    try {
+      const r = await chiama();
+      setStato({ aperto: true, attesa: false, testo: r.risposta || '', errore: '' });
+    } catch (err) {
+      setStato({ aperto: true, attesa: false, testo: '', errore: err.message });
+    } finally {
+      if (onAttesa) onAttesa(-1);
+    }
+  }
+  return (
+    <div className="ai-cella" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+      <button type="button" className="ai-btn" title={titolo} onClick={esegui} disabled={stato.attesa}>
+        {stato.attesa ? '…' : etichetta}
+      </button>
+      {stato.aperto && (
+        <div className={`ai-risposta${stato.errore ? ' ai-errore' : ''}`}>
+          {stato.attesa ? 'Elaborazione in corso…' : stato.errore || stato.testo}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Icona di elaborazione dell'IA: due esagoni che ruotano uno sull'altro, in senso opposto. */
+function IconaElaborazione() {
+  return (
+    <svg className="ai-elab" viewBox="0 0 28 28" width="40" height="40" role="status" aria-label="Elaborazione IA in corso">
+      <title>Elaborazione IA in corso</title>
+      <g className="ai-elab-a">
+        <polygon points={hexPoints(10, 14, 8)} fill="none" stroke="#38bdf8" strokeWidth="2" strokeLinejoin="round" />
+      </g>
+      <g className="ai-elab-b">
+        <polygon points={hexPoints(18, 14, 8)} fill="none" stroke="#a78bfa" strokeWidth="2" strokeLinejoin="round" />
+      </g>
+    </svg>
+  );
+}
+
+function AssistenteIA() {
+  const [domanda, setDomanda] = useState('');
+  // Richieste in corso: finché ce n'è una, accanto al titolo gira l'icona di elaborazione
+  const [inCorso, setInCorso] = useState(0);
+  const segnala = (d) => setInCorso((n) => Math.max(0, n + d));
+  return (
+    <Section title={<>Assistente IA{inCorso > 0 && <IconaElaborazione />}</>}
+      right={<span className="muted small">solo lettura, nessuna azione sui database</span>}>
+      <div className="ai-azioni">
+        <AiRun etichetta="AI · incidenti" titolo="Raggruppa gli eventi recenti per incidente" chiama={() => api('/ai/incidenti')} onAttesa={segnala} />
+        <AiRun etichetta="AI · anomalie" titolo="Cerca nella settimana le ore con eventi fuori dall'ordinario" chiama={() => api('/ai/anomalie')} onAttesa={segnala} />
+      </div>
+      <div className="ai-domanda">
+        <input type="text" value={domanda} onChange={(e) => setDomanda(e.target.value)}
+          placeholder="Domanda sullo stato dei server" aria-label="Domanda per l'assistente IA" />
+        <AiRun etichetta="AI · chiedi" titolo="Risponde usando gli eventi e il report Insight visibili"
+          chiama={() => api('/ai/domanda', { method: 'POST', body: { domanda } })} onAttesa={segnala} />
+      </div>
+    </Section>
+  );
+}
+
 function EventsPanel({ events }) {
   return (
     <Section title="Eventi rilevati">
@@ -812,6 +868,9 @@ function EventsPanel({ events }) {
         { key: 'cluster_name', label: 'Cluster' },
         { key: 'category', label: 'Categoria' },
         { key: 'message', label: 'Messaggio' },
+        { key: 'ai', label: 'AI', render: (v, row) => (
+          <AiRun titolo="Spiega questo evento" chiama={() => api('/ai/evento', { method: 'POST', body: row })} />
+        ) },
       ]} empty="Nessun evento: il monitoraggio non ha ancora rilevato variazioni" />
     </Section>
   );
@@ -915,11 +974,14 @@ function wrCelle(n) {
   return out.slice(0, n);
 }
 
+// Stati di membro sani: ONLINE/Synced (MySQL, Galera), PRIMARY/SECONDARY/ARBITER (MongoDB). Come Monitor.STATI_MEMBRO_SANI.
+const STATI_MEMBRO_SANI = ['ONLINE', 'Synced', 'PRIMARY', 'SECONDARY', 'ARBITER'];
+
 function wrStato(n) {
   if (n.up === null || n.up === undefined || n.kind === 'non-in-anagrafica') return 'unknown';
   if (n.up === false) return 'bad';
   const m = n.statoMembro;
-  if (m && m !== 'ONLINE' && m !== 'Synced') return ['ERROR', 'OFFLINE', 'UNREACHABLE'].includes(m) ? 'bad' : 'warn';
+  if (m && !STATI_MEMBRO_SANI.includes(m)) return ['ERROR', 'OFFLINE', 'UNREACHABLE'].includes(m) ? 'bad' : 'warn';
   if (n.replicaOk === false) return 'warn';
   return 'ok';
 }
@@ -1298,8 +1360,11 @@ function WarRoomView({ data, onOpen, onExit }) {
 function Dashboard() {
   const [data, setData] = useState(null);
   const [selected, setSelected] = useState(null);
-  const [plan, setPlan] = useState(null);
   const [detail, setDetail] = useState(null);
+  // Frequenze dei controlli, lette dai parametri: la barra in alto le mostra come sono davvero
+  const [frequenze, setFrequenze] = useState([]);
+  useEffect(() => { api('/frequenze').then(setFrequenze).catch(() => setFrequenze([])); }, []);
+  const valoreFrequenza = (chiave) => frequenze.find((x) => x.chiave === chiave)?.valore ?? '…';
   const [report, setReport] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
   const [error, setError] = useState(null);
@@ -1373,7 +1438,7 @@ function Dashboard() {
     <>
       <div className="toolbar">
         <span className="muted">
-          {data ? `Vista aggiornata alle ${new Date(data.generatoAlle).toLocaleTimeString('it-IT')} · stato dei server ogni 5 minuti, sezioni pesanti ogni 15` : 'Caricamento…'}
+          {data ? `Vista aggiornata alle ${new Date(data.generatoAlle).toLocaleTimeString('it-IT')} · raggiungibilità ogni ${valoreFrequenza('rilevamento.raggiungibilita_secondi')} s, stato ogni ${valoreFrequenza('rilevamento.leggero_minuti')} min, sezioni pesanti ogni ${valoreFrequenza('rilevamento.pesante_minuti')} min` : 'Caricamento…'}
         </span>
         <div className="toolbar-actions">
           <button className="secondary" onClick={() => cambiaVista(true)} disabled={!data}>Vista avanzata</button>
@@ -1413,6 +1478,8 @@ function Dashboard() {
           {error} <button className="secondary" onClick={load}>Riprova</button>
         </div>
       )}
+
+      {data && <AssistenteIA />}
 
       {data && <DashboardSummary data={data} onOpen={open} parte="kpi" />}
 
@@ -1470,8 +1537,6 @@ function Dashboard() {
         </aside>
       </div>
 
-      {plan && <ExplainPanel plan={plan} onClose={() => setPlan(null)} />}
-
       {selected && (
         <div className="report-head">
           <h2>Dettaglio: {selected.name}</h2>
@@ -1486,9 +1551,61 @@ function Dashboard() {
 
 /* ------------------------------------------------------------------- REPORT */
 
+// Tecnologia del server: 'server' (MySQL, MariaDB, Galera, InnoDB Cluster), 'postgres', 'sqlserver', 'mongodb'
+// Il report SQL Server e quello MySQL non sempre includono il tipo in r.server: si usa anche il motore dichiarato
+const tecnologiaDel = (r) => {
+  if (r.server?.kind) return r.server.kind;
+  const motore = r.identita?.motore || '';
+  if (motore === 'SQL Server') return 'sqlserver';
+  if (motore === 'PostgreSQL') return 'postgres';
+  if (motore === 'MongoDB') return 'mongodb';
+  return 'server';
+};
+
+// Mostra solo le colonne che la tecnologia rileva: se nessuna riga ha un valore, la colonna non compare
+const colonneRilevate = (righe, colonne) => colonne.filter((c) => (righe || []).some((x) => x && x[c.key] != null));
+
+// Risorse per tecnologia: ogni tecnologia mostra le sue metriche, con il proprio titolo
+const RISORSE = {
+  server: { titolo: 'Risorse del servizio MySQL / MariaDB', colonne: [
+    { key: 'cpuPercent', label: 'CPU (%)' }, { key: 'cpuCore', label: 'Core disponibili' },
+    { key: 'memUsedBytes', label: 'Memoria usata', render: formatBytes },
+    { key: 'memLimitBytes', label: 'Memoria totale', render: formatBytes },
+    { key: 'memPercent', label: 'Memoria (%)' },
+    { key: 'memoriaMysqldAllocataBytes', label: 'Memoria allocata da mysqld', render: formatBytes },
+    { key: 'bufferPoolBytes', label: 'InnoDB buffer pool', render: formatBytes },
+  ] },
+  postgres: { titolo: 'Risorse del server PostgreSQL', colonne: [
+    { key: 'cpuPercent', label: 'CPU (%)' }, { key: 'cpuCore', label: 'Core disponibili' },
+    { key: 'memUsedBytes', label: 'Memoria usata', render: formatBytes },
+    { key: 'memLimitBytes', label: 'Memoria totale', render: formatBytes },
+    { key: 'memPercent', label: 'Memoria (%)' },
+  ] },
+  sqlserver: { titolo: 'Risorse del server SQL Server', colonne: [
+    // Il report SQL Server espone il numero di CPU come "cpu"
+    { key: 'cpu', label: 'CPU logiche' },
+    { key: 'memUsedBytes', label: 'Memoria di sistema usata', render: formatBytes },
+    { key: 'memLimitBytes', label: 'Memoria di sistema totale', render: formatBytes },
+    { key: 'memPercent', label: 'Memoria (%)' },
+  ] },
+  mongodb: { titolo: 'Risorse del nodo MongoDB', colonne: [
+    { key: 'cpuPercent', label: 'CPU (%)' }, { key: 'memUsedBytes', label: 'Memoria usata', render: formatBytes },
+    { key: 'memLimitBytes', label: 'Memoria totale', render: formatBytes }, { key: 'memPercent', label: 'Memoria (%)' },
+    { key: 'memoriaResidenteBytes', label: 'Memoria residente mongod', render: formatBytes },
+    { key: 'cacheBytes', label: 'Cache WiredTiger in uso', render: formatBytes },
+  ] },
+};
+
 function Report({ report: r }) {
   const cl = r.cluster;
+  const tech = tecnologiaDel(r);
   const [plan, setPlan] = useState(null);
+  const permessi = useContext(PermessiContext);
+  // Il piano di esecuzione vale per MySQL, MariaDB, PostgreSQL e SQL Server, e richiede il permesso diagnostica
+  const sceltaPiano = (schema) => (permessi.includes('diagnostica') && r.server.kind !== 'mongodb'
+    ? (x) => setPlan({ serverId: r.server.id, server: r.server.name, sql: x.QUERY, schema: x[schema] })
+    : undefined);
+  const pianoAttivo = permessi.includes('diagnostica') && r.server.kind !== 'mongodb';
   return (
     <div className="report">
       {r.connessione && r.connessione.ok === false && (
@@ -1524,26 +1641,20 @@ function Report({ report: r }) {
         </Section>
       )}
       <Section title="Identità e versione">
-        <Table rows={[r.identita || {}]} columns={[
+        <Table rows={[r.identita || {}]} columns={colonneRilevate([r.identita], [
           { key: 'edizione', label: 'Edizione' }, { key: 'versione', label: 'Versione' },
           { key: 'patch', label: 'Patch' }, { key: 'hostname', label: 'Hostname' },
-          { key: 'porta', label: 'Porta' }, { key: 'readOnly', label: 'Read only' },
-          { key: 'superReadOnly', label: 'Super read only' },
-        ]} />
+          { key: 'porta', label: 'Porta' },
+          // Modalità di sola lettura: MySQL/MariaDB (anche super read only); PostgreSQL solo come replica
+          ...(tech === 'server' ? [{ key: 'readOnly', label: 'Read only' }, { key: 'superReadOnly', label: 'Super read only' }] : []),
+          ...(tech === 'postgres' ? [{ key: 'readOnly', label: 'In recovery (replica)' }] : []),
+        ])} />
         <p>Topologia: <strong>{r.topologia?.tipo}</strong>{r.topologia?.cluster && <> — cluster <strong>{r.topologia.cluster}</strong></>}</p>
       </Section>
 
-      {r.risorse && (
-      <Section title="Risorse del servizio MySQL">
-        <Table rows={[r.risorse || {}]} columns={[
-          { key: 'cpuPercent', label: 'CPU (%)' },
-          { key: 'cpuCore', label: 'Core disponibili' },
-          { key: 'memUsedBytes', label: 'Memoria usata', render: formatBytes },
-          { key: 'memLimitBytes', label: 'Memoria totale', render: formatBytes },
-          { key: 'memPercent', label: 'Memoria (%)' },
-          { key: 'memoriaMysqldAllocataBytes', label: 'Memoria allocata da mysqld', render: formatBytes },
-          { key: 'bufferPoolBytes', label: 'InnoDB buffer pool', render: formatBytes },
-        ]} empty="Dati non disponibili" />
+      {r.risorse && RISORSE[tech] && (
+      <Section title={RISORSE[tech].titolo}>
+        <Table rows={[r.risorse]} columns={colonneRilevate([r.risorse], RISORSE[tech].colonne)} empty="Dati non disponibili" />
       </Section>
       )}
 
@@ -1552,13 +1663,22 @@ function Report({ report: r }) {
           <p>
             Stato: <Badge value={cl.stato} /> &nbsp; Membri online: <strong>{cl.online}/{cl.totale}</strong>
             &nbsp; Primario: <strong>{fmt(cl.primario)}</strong>
+            {cl.oplogOre != null && <> &nbsp; Finestra dell'oplog: <strong>{cl.oplogOre} ore</strong></>}
           </p>
-          <Table rows={cl.membri} columns={[
+          <Table rows={cl.membri} columns={colonneRilevate(cl.membri, [
             { key: 'MEMBER_HOST', label: 'Membro' }, { key: 'MEMBER_PORT', label: 'Porta' },
             { key: 'MEMBER_ROLE', label: 'Ruolo', render: (v) => <Badge value={v} /> },
             { key: 'MEMBER_STATE', label: 'Stato', render: (v) => <Badge value={v} /> },
             { key: 'MEMBER_VERSION', label: 'Versione' },
-          ]} />
+            // Dettagli dei replica set MongoDB: presenti solo quando il monitor li rileva
+            ...(cl.membri.some((m) => m.priorita != null) ? [
+              { key: 'priorita', label: 'Priorità' },
+              { key: 'voti', label: 'Voti' },
+              { key: 'ritardoSec', label: 'Ritardo (s)', render: (v) => (v == null ? '—' : v) },
+              { key: 'nascosto', label: 'Nascosto', render: (v) => (v ? 'sì' : '—') },
+              { key: 'arbitro', label: 'Arbitro', render: (v) => (v ? 'sì' : '—') },
+            ] : []),
+          ])} />
           {cl.aggiornamento && (
             <>
               <h4>Aggiornamento dei nodi</h4>
@@ -1576,40 +1696,106 @@ function Report({ report: r }) {
         </Section>
       )}
 
-      <Section title="Replica e relay log">
-        <p>Dimensione totale relay log: <strong>{formatBytes(r.relayLogTotaleBytes)}</strong></p>
-        <Table rows={r.replica} columns={[
-          { key: 'canale', label: 'Canale' }, { key: 'sorgente', label: 'Sorgente' },
-          { key: 'ioAttivo', label: 'IO thread' }, { key: 'sqlAttivo', label: 'SQL thread' },
+      {/* SQL Server non ha una sezione di replica nel report: la topologia è nella scheda Identità */}
+      {tech !== 'sqlserver' && (
+      <Section title={tech === 'mongodb' ? 'Replica set' : tech === 'postgres' ? 'Replica in streaming' : 'Replica e relay log'}>
+        {tech === 'server' && <p>Dimensione totale relay log: <strong>{formatBytes(r.relayLogTotaleBytes)}</strong></p>}
+        <Table rows={r.replica || []} columns={colonneRilevate(r.replica, [
+          { key: 'canale', label: tech === 'mongodb' ? 'Replica set' : 'Canale' }, { key: 'sorgente', label: 'Sorgente' },
+          // MySQL/MariaDB hanno IO e SQL thread separati; PostgreSQL e MongoDB mostrano un solo stato
+          ...(tech === 'server' ? [
+            { key: 'ioAttivo', label: 'IO thread' }, { key: 'sqlAttivo', label: 'SQL thread' },
+          ] : [{ key: 'ioAttivo', label: 'Attivo' }]),
           { key: 'secondiDiRitardo', label: 'Ritardo (s)' },
-          { key: 'relayLogBytes', label: 'Relay log', render: formatBytes },
+          ...(tech === 'server' ? [{ key: 'relayLogBytes', label: 'Relay log', render: formatBytes }] : []),
           { key: 'ultimoErrore', label: 'Ultimo errore' },
-        ]} empty="Nessun canale di replica attivo" />
+        ])} empty="Nessun canale di replica attivo" />
       </Section>
+      )}
+
+      {(tech === 'postgres' || tech === 'mongodb') && (r.repliche || []).length > 0 && (
+      <Section title="Repliche collegate">
+        <Table rows={r.repliche} columns={colonneRilevate(r.repliche, [
+          { key: 'nome', label: 'Nome' }, { key: 'indirizzo', label: 'Indirizzo' }, { key: 'stato', label: 'Stato' },
+          { key: 'sincrono', label: 'Sincrono' }, { key: 'ritardoSec', label: 'Ritardo (s)' },
+        ])} />
+      </Section>
+      )}
 
       {r.connessioni && (
         <Section title="Connessioni attive">
-          <p>Connessioni attive: <strong>{fmt(r.connessioni.attive)}</strong></p>
+          <p>
+            Connessioni attive: <strong>{fmt(r.connessioni.attive)}</strong>
+            {r.connessioni.massimo != null && <> su {fmt(r.connessioni.massimo)} consentite</>}
+          </p>
+          {r.transazioniInattive && (
+            <p>
+              Transazioni inattive oltre soglia: <strong>{fmt(r.transazioniInattive.n)}</strong>
+              <span className="muted small"> · soglia nei parametri Insight</span>
+            </p>
+          )}
         </Section>
+      )}
+
+      {/* Indici: dati dell'ultimo rilevamento pesante (MySQL, MariaDB, PostgreSQL) */}
+      {r.indici && (
+        <Section title="Indici">
+          <h4>Indici inutilizzati</h4>
+          <Table rows={r.indici.indiciInutilizzati || []} columns={[
+            { key: 'object_schema', label: 'Schema' },
+            { key: 'object_name', label: 'Tabella', render: (v, row) => v ?? row.table_name },
+            { key: 'index_name', label: 'Indice' },
+          ]} empty="Nessun indice inutilizzato rilevato" />
+          <h4>Tabelle senza chiave primaria</h4>
+          <Table rows={r.indici.tabelleSenzaPrimaryKey || []} columns={[
+            { key: 'TABLE_SCHEMA', label: 'Schema', render: (v, row) => v ?? row.table_schema },
+            { key: 'TABLE_NAME', label: 'Tabella', render: (v, row) => v ?? row.table_name },
+          ]} empty="Tutte le tabelle hanno una chiave primaria" />
+          <p className="muted small">Elenco completo degli indici e frammentazione: pagina Indici.</p>
+        </Section>
+      )}
+
+      {r.cacheWiredTiger && (
+        <Section title="Cache WiredTiger">
+          <p>
+            Byte sporchi: <strong>{formatBytes(r.cacheWiredTiger.sporcaBytes)}</strong>
+            &nbsp; su {formatBytes(r.cacheWiredTiger.massimaBytes)} configurati
+            &nbsp; · in cache: <strong>{formatBytes(r.cacheWiredTiger.inCacheBytes)}</strong>
+          </p>
+        </Section>
+      )}
+
+      {(tech === 'sqlserver' || tech === 'postgres') && (
+        <p className="muted small">
+          {tech === 'sqlserver'
+            ? 'Il controllo backup (ultimo backup completo e del log), se attivo per il server, è nel report Insight.'
+            : 'Il controllo vacuum (tabelle con troppe tuple morte), se attivo per il server, è nel report Insight.'}
+        </p>
       )}
 
       {r.queryAttive != null && (
       <Section title="Query attive (per consumo)">
-        <QueryTable rows={r.queryAttive} />
+        {pianoAttivo && <p className="muted small">Clicca una query per vedere il piano di esecuzione.</p>}
+        <QueryTable rows={r.queryAttive} onPick={sceltaPiano('DB')} />
       </Section>
       )}
 
       {r.queryLente != null && (
       <Section title="Query più lente (per digest)">
-        <p className="muted small">Clicca una query per vedere il piano di esecuzione.</p>
-        <Table rows={r.queryLente} onRowClick={(q) => setPlan({ serverId: r.server.id, server: r.server.name, sql: q.QUERY, schema: q.SCHEMA_NAME })} columns={[
+        {pianoAttivo && <p className="muted small">Clicca una query per vedere il piano di esecuzione.</p>}
+        <Table rows={r.queryLente} onRowClick={sceltaPiano('SCHEMA_NAME')} columns={[
           { key: 'SCHEMA_NAME', label: 'Schema' },
           { key: 'QUERY', label: 'Query', render: (v) => <code>{fmt(v)}</code> },
           { key: 'ESECUZIONI', label: 'Esecuzioni' }, { key: 'MEDIA_SEC', label: 'Media (s)' },
           { key: 'MAX_SEC', label: 'Max (s)' }, { key: 'RIGHE_ESAMINATE', label: 'Righe esaminate' },
           { key: 'SENZA_INDICE', label: 'Senza indice' },
+          { key: 'AI', label: 'AI', render: (v, row) => (
+            <>
+              <AiRun etichetta="AI spiega" titolo="Spiega perché la query è lenta" chiama={() => api('/ai/query/spiega', { method: 'POST', body: row })} />
+              <AiRun etichetta="AI suggerisci" titolo="Proposte da valutare: indici o riscritture, da provare in test" chiama={() => api('/ai/query/suggerisci', { method: 'POST', body: row })} />
+            </>
+          ) },
         ]} empty="Nessuna statistica disponibile" />
-        {plan && <ExplainPanel plan={plan} onClose={() => setPlan(null)} />}
       </Section>
       )}
 
@@ -1618,6 +1804,7 @@ function Report({ report: r }) {
           <ul>{Object.entries(r.errori).map(([k, v]) => <li key={k}><strong>{k}:</strong> {v}</li>)}</ul>
         </Section>
       )}
+      {plan && <ExplainPanel plan={plan} onClose={() => setPlan(null)} />}
     </div>
   );
 }
@@ -1632,7 +1819,7 @@ const NODE_H = 134;
 function topoColor(node) {
   if (node.up === false) return '#ef4444';
   if (node.up === null || node.up === undefined) return '#64748b';
-  if (node.statoMembro && node.statoMembro !== 'ONLINE') return '#f59e0b';
+  if (node.statoMembro && !STATI_MEMBRO_SANI.includes(node.statoMembro)) return '#f59e0b';
   return '#22c55e';
 }
 
@@ -1903,16 +2090,16 @@ const RANK = { red: 3, yellow: 2, grey: 1, green: 0 };
 /* Stato di un nodo: rosso allarme, giallo warning, verde ok, grigio in attesa. */
 function statusOf(n) {
   if (n.kind === 'non-in-anagrafica') {
-    const red = n.statoMembro && n.statoMembro !== 'ONLINE' ? [`membro ${n.statoMembro}`] : [];
+    const red = n.statoMembro && !STATI_MEMBRO_SANI.includes(n.statoMembro) ? [`membro ${n.statoMembro}`] : [];
     return red.length
       ? { level: 'red', reasons: red }
       : { level: 'yellow', reasons: ['non registrato in anagrafica'] };
   }
   if (n.up === null || n.up === undefined) return { level: 'grey', reasons: ['in attesa del primo rilevamento'] };
-  if (n.up === false) return { level: 'red', reasons: [`non raggiungibile${n.errore ? ': ' + n.errore : ''}`] };
+  if (n.up === false) return { level: 'red', reasons: [`non raggiungibile${n.errore ? ': ' + sintesiErrore(n.errore) : ''}`] };
   const red = [];
   const yellow = [];
-  if (n.statoMembro && n.statoMembro !== 'ONLINE') red.push(`membro ${n.statoMembro}`);
+  if (n.statoMembro && !STATI_MEMBRO_SANI.includes(n.statoMembro)) red.push(`membro ${n.statoMembro}`);
   if (n.replicaOk === false) red.push('replica non attiva o con errore');
   if (n.ritardoSec > 60) yellow.push(`ritardo replica ${n.ritardoSec} s`);
   if (n.errant > 0) yellow.push(`${n.errant} transazioni errant`);
@@ -2020,7 +2207,7 @@ function ClusterSummary({ group, onOpen, onDetail, selectedId }) {
       <div className="set-head">
         <div className="set-title">
           <h3>Cluster {group.nome}</h3>
-          <span className="set-kind">{group.galera ? 'Galera Cluster' : 'InnoDB Cluster'}</span>
+          <span className="set-kind">{group.galera ? 'Galera Cluster' : (group.etichetta || 'InnoDB Cluster')}</span>
           <Badge value={group.stato || 'sconosciuto'} />
           <span className={`tile-badge ${livello}`}>{livello === 'green' ? 'OK' : livello === 'red' ? 'ALLARME' : livello === 'yellow' ? 'WARNING' : 'IN ATTESA'}</span>
           {group.richiedeRipristino && <span className="tile-badge red">RIPRISTINO RICHIESTO</span>}
@@ -2138,7 +2325,7 @@ function DetailView({ detail, data, onClose, onOpen, selectedId }) {
           <div className="set-title">
             <button type="button" className="secondary" onClick={onClose}>← Sintesi</button>
             <h3>Cluster {g.nome}</h3>
-            <span className="set-kind">{g.galera ? 'Galera Cluster' : 'InnoDB Cluster'}</span>
+            <span className="set-kind">{g.galera ? 'Galera Cluster' : (g.etichetta || 'InnoDB Cluster')}</span>
             <Badge value={g.stato || 'sconosciuto'} />
           </div>
           <span className="muted">{g.galera ? 'multi-primario · tutti i nodi scrivono' : `primario ${fmt(g.primario)}`} · {g.onlineNodi ?? 0}/{g.nodi.length} online</span>
@@ -2342,12 +2529,22 @@ const sezioniHelp = (v) => [
   {
     titolo: 'Insight',
     chi: 'tutti',
-    testo: `Health check giornaliero di MySQL e MariaDB: punteggio di salute per server, controlli con esito, raccomandazione e fonte. Il report è generato ogni giorno alle ${String(v('insight.ora')).padStart(2, '0')}:00, con la data di generazione e quella della prossima produzione. Si può rigenerare subito con "Genera ora".`,
+    testo: `Health check giornaliero di MySQL, MariaDB, PostgreSQL, SQL Server e MongoDB: punteggio di salute per server, controlli con esito, raccomandazione e fonte. Il report è generato ogni giorno alle ${String(v('insight.ora')).padStart(2, '0')}:00 (ora impostata nei parametri), con la data di generazione e quella della prossima produzione. Entra nel report solo i server con "Includi nel report Insight" attivo. Si può rigenerare subito con "Genera ora".`,
   },
   {
     titolo: 'Ricerca',
     chi: 'tutti',
-    testo: 'Cerca un database per nome in tutti i server MySQL e MariaDB visibili. Mostra in quale server e ambiente si trova e segnala i server che non hanno risposto.',
+    testo: 'Cerca un database per nome in tutti i server MySQL, MariaDB, PostgreSQL e SQL Server visibili. Mostra in quale server e ambiente si trova e segnala i server che non hanno risposto.',
+  },
+  {
+    titolo: 'Transazioni bloccate',
+    chi: 'utenti e amministratori (terminare la sessione: solo amministratore)',
+    testo: 'Elenca le sessioni in attesa di un lock e quella che lo tiene, su tutti i server visibili, con aggiornamento ogni 15 s. Per l\'amministratore il pulsante "Termina" chiude la sessione che è in testa alla catena di blocchi: le sue transazioni non confermate vengono annullate. Va usato con cautela.',
+  },
+  {
+    titolo: 'Indici',
+    chi: 'tutti',
+    testo: 'Analisi in sola lettura per server e database: i 10 indici più frammentati e i 10 con più scritture che letture. Per SQL Server mostra anche la topologia (standalone, FCI, Always On). MongoDB non è incluso.',
   },
   {
     titolo: 'Report',
@@ -2357,7 +2554,7 @@ const sezioniHelp = (v) => [
   {
     titolo: 'Configurazione',
     chi: "amministratore per parametri, server e utenti; utente solo per la propria password",
-    testo: 'Per l\'amministratore: Parametri di rilevamento (frequenze di controllo, limiti delle query, conservazione dei dati, ora di Insight), Server da monitorare (anagrafica, ambiente, test di connessione) e Utenti (creazione, ruolo, server assegnati, reset password). Per tutti gli utenti: il reset della propria password.',
+    testo: 'Per l\'amministratore: Parametri di rilevamento (frequenze di controllo, limiti delle query, conservazione dei dati, ora di Insight), Siti, Server da monitorare (anagrafica, ambiente, controlli per tecnologia, test di connessione), Insight IA (provider e chiavi API), Telegram (notifiche degli eventi), Variabili di configurazione (modifiche rilevate) e Utenti (creazione, profilo, server assegnati, reset password). Per tutti gli utenti: il reset della propria password.',
   },
   {
     titolo: 'Piano di esecuzione',
@@ -2389,8 +2586,8 @@ function HelpTab() {
                 {param.map((p) => (
                   <tr key={p.chiave}>
                     <td>{p.descrizione}</td>
-                    <td><strong>{p.valore} {p.unita}</strong></td>
-                    <td className="muted">{p.predefinito} {p.unita}</td>
+                    <td><strong>{p.valore} {unitaDi(p.valore, p.unita)}</strong></td>
+                    <td className="muted">{p.predefinito} {unitaDi(p.predefinito, p.unita)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2924,22 +3121,6 @@ function StatisticsPage() {
   );
 }
 
-/* Controlli che il monitor esegue per tecnologia: se non selezionati nell'anagrafica non vengono eseguiti. */
-const CONTROLLI_COMUNI = [
-  { k: 'connessioni', l: 'Connessioni attive (numero)' },
-  { k: 'query_attive', l: 'Query attive (numero e dettaglio)' },
-  { k: 'query_lente', l: 'Query più lente' },
-  { k: 'utenti', l: 'Utenti: data di creazione e scadenza' },
-  { k: 'database', l: 'Database: data di creazione e dimensione' },
-  { k: 'risorse', l: 'Risorse del server (CPU e memoria)' },
-];
-const CONTROLLI_PER_TECNOLOGIA = {
-  server: [...CONTROLLI_COMUNI, { k: 'indici', l: 'Indici inutilizzati e tabelle senza chiave primaria' }],
-  postgres: [...CONTROLLI_COMUNI, { k: 'indici', l: 'Indici inutilizzati e tabelle senza chiave primaria' },
-    { k: 'transazioni_inattive', l: 'Transazioni inattive da oltre 5 minuti' }],
-  sqlserver: [...CONTROLLI_COMUNI, { k: 'topologia', l: 'Topologia (standalone, FCI, Always On)' }],
-};
-
 /* Insight con IA: abilitazione, provider e chiavi API di Anthropic e OpenAI. Solo amministratore. */
 function AiPanel() {
   const [stato, setStato] = useState(null);
@@ -2954,6 +3135,7 @@ function AiPanel() {
     setForm({
       abilitata: s.abilitata, provider: s.provider,
       modelloAnthropic: s.modelloAnthropic, modelloOpenai: s.modelloOpenai,
+      modelloOllama: s.modelloOllama, urlOllama: s.urlOllama,
       chiaveAnthropic: '', chiaveOpenai: '',
       cancellaChiaveAnthropic: false, cancellaChiaveOpenai: false,
     });
@@ -2970,10 +3152,12 @@ function AiPanel() {
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const modificato = form.abilitata !== stato.abilitata || form.provider !== stato.provider
     || form.modelloAnthropic !== stato.modelloAnthropic || form.modelloOpenai !== stato.modelloOpenai
+    || form.modelloOllama !== stato.modelloOllama || form.urlOllama !== stato.urlOllama
     || form.chiaveAnthropic !== '' || form.chiaveOpenai !== ''
     || form.cancellaChiaveAnthropic || form.cancellaChiaveOpenai;
-  // Con "entrambi" servono entrambe le chiavi
-  const chiaveScelta = form.provider === 'entrambi' ? stato.anthropicConfigurata && stato.openaiConfigurata
+  // Con "entrambi" servono entrambe le chiavi; Ollama non usa chiavi
+  const chiaveScelta = form.provider === 'ollama' ? true
+    : form.provider === 'entrambi' ? stato.anthropicConfigurata && stato.openaiConfigurata
     : form.provider === 'anthropic' ? stato.anthropicConfigurata : stato.openaiConfigurata;
 
   async function salva() {
@@ -3017,9 +3201,9 @@ function AiPanel() {
   return (
     <>
       <div className="warn-banner" role="status">
-        Con l'IA attiva, il report Insight viene inviato al provider scelto: nomi dei server, versioni, punteggi
-        ed esiti dei controlli (possono comparire nomi di utenti e database). Non vengono inviati indirizzi di rete
-        né password. Verificare i termini del provider prima di abilitarlo.
+        {form.provider === 'ollama'
+          ? 'Con Ollama il modello gira sull\'host: i dati dell\'analisi non lasciano la macchina. Non vengono inviati indirizzi di rete né password.'
+          : 'Con l\'IA attiva, il report Insight viene inviato al provider scelto: nomi dei server, versioni, punteggi ed esiti dei controlli (possono comparire nomi di utenti e database). Non vengono inviati indirizzi di rete né password. Verificare i termini del provider prima di abilitarlo.'}
       </div>
 
       <Section title="Stato">
@@ -3037,23 +3221,43 @@ function AiPanel() {
       <Section title="Provider e modelli">
         <label>Provider
           <select value={form.provider} disabled={busy} onChange={(e) => set('provider', e.target.value)}>
-            <option value="anthropic">Anthropic</option>
+            <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai">OpenAI</option>
             <option value="entrambi">Entrambi (Anthropic e OpenAI)</option>
+            <option value="ollama">Ollama (locale, senza chiave)</option>
           </select>
         </label>
         <p className="muted small">
           {form.provider === 'entrambi'
             ? 'Il commento IA riporta la risposta di entrambi i provider, uno sotto l\'altro. Servono entrambe le chiavi.'
-            : 'Il commento IA usa solo il provider scelto.'}
+            : form.provider === 'ollama'
+              ? 'Il commento IA usa il modello installato in Ollama, sull\'indirizzo indicato qui sotto. Il modello deve essere già scaricato sull\'host (per esempio con "ollama pull").'
+              : 'Il commento IA usa solo il provider scelto.'}
         </p>
+        {form.provider === 'ollama' && (
+          <>
+            <label>Modello Ollama
+              <input value={form.modelloOllama} disabled={busy} onChange={(e) => set('modelloOllama', e.target.value)} />
+            </label>
+            <label>Indirizzo di Ollama
+              <input value={form.urlOllama} disabled={busy} onChange={(e) => set('urlOllama', e.target.value)}
+                placeholder={stato.urlOllamaPredefinito} />
+            </label>
+            <p className="muted small">
+              Dal container l'host è raggiungibile come {stato.urlOllamaPredefinito}. Se Ollama gira su un altro
+              server, indicarne l'indirizzo.
+            </p>
+          </>
+        )}
         <label>Modello Anthropic
           <input value={form.modelloAnthropic} disabled={busy} onChange={(e) => set('modelloAnthropic', e.target.value)} />
         </label>
         <label>Modello OpenAI
           <input value={form.modelloOpenai} disabled={busy} onChange={(e) => set('modelloOpenai', e.target.value)} />
         </label>
-        <p className="muted small">Predefiniti: {stato.modelliPredefiniti.anthropic} e {stato.modelliPredefiniti.openai}.</p>
+        <p className="muted small">
+          Predefiniti: {stato.modelliPredefiniti.anthropic}, {stato.modelliPredefiniti.openai} e {stato.modelliPredefiniti.ollama}.
+        </p>
       </Section>
 
       <Section title="Chiavi API">
@@ -3085,10 +3289,13 @@ function TelegramPanel() {
   const [errore, setErrore] = useState(null);
   const [msg, setMsg] = useState(null);
   const [busy, setBusy] = useState(false);
+  // Il token si invia solo quando lo si sostituisce davvero: il campo compare solo su richiesta
+  const [sostituisci, setSostituisci] = useState(false);
 
   const accetta = (s) => {
     setStato(s);
-    setForm({ abilitata: s.abilitata, chatId: s.chatId, gravitaMinima: s.gravitaMinima, token: '', cancellaToken: false });
+    setSostituisci(false);
+    setForm({ abilitata: s.abilitata, chatId: s.chatId, gravitaMinima: s.gravitaMinima, messaggioIa: s.messaggioIa, token: '', cancellaToken: false });
   };
 
   const carica = useCallback(async () => {
@@ -3101,12 +3308,16 @@ function TelegramPanel() {
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const modificato = form.abilitata !== stato.abilitata || form.chatId !== stato.chatId
-    || form.gravitaMinima !== stato.gravitaMinima || form.token !== '' || form.cancellaToken;
+    || form.gravitaMinima !== stato.gravitaMinima || !!form.messaggioIa !== !!stato.messaggioIa
+    || (sostituisci && form.token !== '') || form.cancellaToken;
 
   async function salva() {
     setBusy(true); setErrore(null); setMsg(null);
     try {
-      accetta(await api('/telegram-config', { method: 'PUT', body: form }));
+      // il token va nel corpo solo se è stato richiesto di sostituirlo: altrimenti resta quello salvato
+      const corpo = { ...form };
+      if (!sostituisci) delete corpo.token;
+      accetta(await api('/telegram-config', { method: 'PUT', body: corpo }));
       setMsg('Configurazione salvata');
     } catch (e) { setErrore(e.message); }
     setBusy(false);
@@ -3134,14 +3345,26 @@ function TelegramPanel() {
       </Section>
 
       <Section title="Bot e destinazione">
-        <label>Token del bot
-          <input type="password" autoComplete="off" value={form.token || ''} disabled={busy || form.cancellaToken}
-            placeholder={stato.tokenConfigurato
-              ? `Configurato (${stato.tokenMascherato}): incolla un nuovo token per sostituirlo`
-              : 'Incolla il token ricevuto da BotFather'}
-            aria-label="Token del bot Telegram"
-            onChange={(e) => set('token', e.target.value)} />
-        </label>
+        {(!stato.tokenConfigurato || sostituisci) ? (
+          <label>Token del bot
+            <input type="password" autoComplete="new-password" value={form.token || ''} disabled={busy || form.cancellaToken}
+              placeholder={stato.tokenConfigurato ? 'Incolla il nuovo token' : 'Incolla il token ricevuto da BotFather'}
+              aria-label="Token del bot Telegram"
+              onChange={(e) => set('token', e.target.value)} />
+          </label>
+        ) : (
+          <p className="muted small">Token configurato: {stato.tokenMascherato ? `…${stato.tokenMascherato.slice(1)}` : 'salvato'}</p>
+        )}
+        {stato.tokenConfigurato && !sostituisci && (
+          <button className="secondary" disabled={busy} onClick={() => { setSostituisci(true); set('cancellaToken', false); }}>
+            Sostituisci token
+          </button>
+        )}
+        {sostituisci && (
+          <button className="secondary" disabled={busy} onClick={() => { setSostituisci(false); set('token', ''); }}>
+            Annulla sostituzione
+          </button>
+        )}
         {stato.tokenConfigurato && (
           <button className="secondary" disabled={busy} onClick={() => set('cancellaToken', !form.cancellaToken)}>
             {form.cancellaToken ? 'Annulla rimozione' : 'Rimuovi token'}
@@ -3166,6 +3389,25 @@ function TelegramPanel() {
           Ogni notifica ha il pulsante "Presa visione". Finché non viene confermata, lo stesso evento non viene inviato di nuovo.
           Notifiche in attesa di conferma: <strong>{stato.inAttesa ?? 0}</strong>.
         </p>
+      </Section>
+
+      <Section title="Messaggio dei blocchi scritto dall'IA">
+        <label className="checkbox-row">
+          <input type="checkbox" checked={!!form.messaggioIa}
+            disabled={busy || (!stato.iaDisponibile && !form.messaggioIa)}
+            onChange={(e) => set('messaggioIa', e.target.checked)} />
+          Usa il modello IA per scrivere le notifiche di transazioni bloccate
+        </label>
+        <p className="muted small">
+          Il messaggio indica l'host dove è avvenuto il blocco, il tipo di configurazione del nodo (motore, topologia, ruolo),
+          le sessioni coinvolte e la testa della catena. Il pulsante "Termina sessione" resta invariato.
+          Attivare la funzione verifica il provider IA scelto in Insight IA; se il modello non risponde si invia il testo standard.
+        </p>
+        {!stato.iaDisponibile && (
+          <p className="muted small">
+            Non disponibile: abilitare l'analisi IA in Insight IA con la chiave del provider.
+          </p>
+        )}
       </Section>
 
       <div className="param-footer">
@@ -3248,8 +3490,8 @@ function ParametriPanel({ puoModificare }) {
                         <span className="muted small">{p.unita}</span>
                       </span>
                     </td>
-                    <td>{p.predefinito} {p.unita}</td>
-                    <td className="muted small">{p.min}–{p.max} {p.unita}</td>
+                    <td>{p.predefinito} {unitaDi(p.predefinito, p.unita)}</td>
+                    <td className="muted small">{p.min}–{p.max} {unitaDi(p.max, p.unita)}</td>
                     <td>
                       {puoModificare && p.valore !== p.predefinito && (
                         <button className="secondary" disabled={busy} onClick={() => ripristina(p)}>Predefinito</button>
@@ -3371,6 +3613,8 @@ function PasswordPropria() {
 function ConfigPage({ me, permessi, onChanged }) {
   const amministra = permessi.includes('configurazione');
   const [area, setArea] = useState('parametri');
+  const [esitoImport, setEsitoImport] = useState(null);
+  const [daImportare, setDaImportare] = useState(null);
   if (!amministra) return <PasswordPropria />;
   const aree = [
     { id: 'parametri', label: 'Parametri di rilevamento', visibile: true },
@@ -3384,6 +3628,32 @@ function ConfigPage({ me, permessi, onChanged }) {
   const corrente = aree.some((x) => x.id === area) ? area : 'parametri';
   // Esportazione completa (server, utenti, parametri), scaricata come file JSON
   const esporta = () => { window.location.href = '/api/esportazione'; };
+  // Importazione di un file esportato: server e parametri; gli utenti vanno ricreati dalla sezione Utenti
+  const importaFile = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let dati;
+    try {
+      dati = JSON.parse(await file.text());
+    } catch {
+      setEsitoImport({ errore: 'Il file non è un JSON valido.' });
+      return;
+    }
+    // Prima conferma con il dialogo dell'applicazione, poi l'importazione vera e propria
+    setDaImportare({ nome: file.name, dati });
+  };
+  async function eseguiImport() {
+    const { dati } = daImportare;
+    setDaImportare(null);
+    try {
+      const r = await api('/importazione', { method: 'POST', body: dati });
+      setEsitoImport({ esito: r });
+      if (onChanged) onChanged();
+    } catch (err) {
+      setEsitoImport({ errore: err.message });
+    }
+  }
   return (
     <>
       <div className="config-bar">
@@ -3392,8 +3662,38 @@ function ConfigPage({ me, permessi, onChanged }) {
             <button key={x.id} className={corrente === x.id ? 'menu-item active' : 'menu-item'} onClick={() => setArea(x.id)}>{x.label}</button>
           ))}
         </nav>
-        <button className="secondary" onClick={esporta}>Esporta configurazione</button>
+        <div className="config-azioni">
+          <button className="secondary" onClick={esporta}>Esporta configurazione</button>
+          <label className="file-button" tabIndex={0}>
+            Importa configurazione
+            <input type="file" accept="application/json,.json" hidden onChange={importaFile} />
+          </label>
+        </div>
       </div>
+      {daImportare && (
+        <ConfirmDialog etichetta="Importa"
+          messaggio={`Importare la configurazione da "${daImportare.nome}"? I server con lo stesso nome vengono aggiornati e gli altri creati senza password.`}
+          onConfirm={eseguiImport} onCancel={() => setDaImportare(null)} />
+      )}
+      {esitoImport && (
+        <section className="card">
+          {esitoImport.errore && <div className="warn-banner" role="status">{esitoImport.errore}</div>}
+          {esitoImport.esito && (
+            <>
+              <p>Server creati: {esitoImport.esito.serverCreati}, aggiornati: {esitoImport.esito.serverAggiornati}. Parametri aggiornati: {esitoImport.esito.parametriAggiornati}.</p>
+              {esitoImport.esito.serverSenzaPassword.length > 0 && (
+                <p className="muted">Password da reinserire per: {esitoImport.esito.serverSenzaPassword.join(', ')}.</p>
+              )}
+              {esitoImport.esito.utentiNonImportati > 0 && (
+                <p className="muted">Utenti non importati ({esitoImport.esito.utentiNonImportati}): il file non contiene le password. Crearli dalla sezione Utenti.</p>
+              )}
+              {esitoImport.esito.errori.map((x) => (
+                <div key={x} className="warn-banner" role="status">{x}</div>
+              ))}
+            </>
+          )}
+        </section>
+      )}
       {corrente === 'parametri' && <ParametriPanel puoModificare={amministra} />}
       {corrente === 'siti' && <SitiPanel />}
       {corrente === 'servers' && <ConfigTab onChanged={onChanged} />}
@@ -3449,7 +3749,7 @@ function InsightPage({ permessi }) {
     return (
       <section className="card insight-empty">
         <h3>Nessun report ancora</h3>
-        <p className="muted">Il primo report viene generato automaticamente, poi ogni giorno alle 06:00.</p>
+        <p className="muted">Il primo report viene generato automaticamente, poi ogni giorno all'ora impostata nei parametri (Insight).</p>
         {permessi.includes('diagnostica') && <button onClick={genera} disabled={generando}>{generando ? 'Genero…' : 'Genera ora'}</button>}
       </section>
     );
@@ -3460,6 +3760,7 @@ function InsightPage({ permessi }) {
       <section className="card insight-empty">
         <h3>Nessun server nel report</h3>
         <p className="muted">Nessun server ha l'opzione "Includi nel report Insight" attiva. Attivala nella configurazione del server, in Server da monitorare.</p>
+        {permessi.includes('diagnostica') && <button onClick={genera} disabled={generando}>{generando ? 'Genero…' : 'Genera ora'}</button>}
       </section>
     );
   }
@@ -3504,7 +3805,7 @@ function InsightPage({ permessi }) {
         <p className="muted small">Commento IA non disponibile: {report.analisiIAErrore}</p>
       )}
 
-      {report.server.length === 0 && <p className="muted">Nessun server MySQL o MariaDB visibile.</p>}
+      {report.server.length === 0 && <p className="muted">Nessun server visibile nel report.</p>}
 
       {report.server.map((sv) => (
         <section key={sv.id} className="card insight-server">
@@ -3566,7 +3867,7 @@ function RicercaPage() {
     <>
       <section className="card search-card">
         <h3>Cerca un database</h3>
-        <p className="muted">Cerca in tutti i server MySQL e MariaDB dell'anagrafica che puoi vedere. Almeno 2 caratteri, senza distinguere le maiuscole.</p>
+        <p className="muted">Cerca in tutti i server MySQL, MariaDB, PostgreSQL e SQL Server dell'anagrafica che puoi vedere. Almeno 2 caratteri, senza distinguere le maiuscole.</p>
         <form className="search-form" onSubmit={cerca} role="search">
           <input type="search" value={testo} onChange={(e) => setTesto(e.target.value)} placeholder="nome del database, es. testdb" aria-label="Nome del database" autoFocus />
           <button type="submit" disabled={busy || testo.trim().length < 2}>{busy ? 'Cerco…' : 'Cerca'}</button>
@@ -3615,14 +3916,14 @@ const MANUALE = [
   {
     id: 'introduzione', titolo: 'Introduzione',
     paragrafi: [
-      'DBGuardian è un monitor per database MySQL, MariaDB e PostgreSQL. Raccoglie lo stato dei server in sola lettura, mostra cluster, repliche e singoli server, registra gli eventi e produce un health check giornaliero.',
+      'DBGuardian è un monitor per database MySQL, MariaDB, PostgreSQL, SQL Server e MongoDB. Raccoglie lo stato dei server in sola lettura, mostra cluster, repliche e singoli server, registra gli eventi e produce un health check giornaliero.',
       'Il programma non modifica i database monitorati. Le uniche azioni che cambiano stato sono quelle di configurazione dell\'anagrafica e dei parametri, riservate all\'amministratore.',
     ],
   },
   {
     id: 'accesso', titolo: 'Accesso e ruoli',
     paragrafi: [
-      'Si accede con username e password. In alto a destra il menu utente permette di cambiare la propria password e di uscire. La sessione scade dopo 8 ore di inattività.',
+      'Si accede con username e password. In alto a destra il menu utente permette di cambiare la propria password e di uscire. La sessione scade 8 ore dopo l\'accesso: poi bisogna rientrare.',
     ],
     elenco: [
       'Amministratore: configura server, siti, utenti e parametri di rilevamento, e vede tutti i server.',
@@ -3652,7 +3953,7 @@ const MANUALE = [
   {
     id: 'topologia', titolo: 'Topologia e raggruppamenti',
     paragrafi: [
-      'I cluster InnoDB e Galera sono raggruppati in un unico insieme con i loro membri. Le repliche asincrone e in streaming (MySQL o PostgreSQL) sono mostrate sotto il loro primario o sorgente.',
+      'I cluster InnoDB, Galera e i replica set MongoDB sono raggruppati in un unico insieme con i loro membri. Le repliche asincrone e in streaming (MySQL o PostgreSQL) sono mostrate sotto il loro primario o sorgente.',
       'Per i cluster Galera, il monitor indica il nodo candidato al ripristino quando il cluster è fermo, leggendo lo stato salvato di ciascun nodo. Quando la scelta non è sicura, lo segnala come provvisoria.',
       'Nella vista di dettaglio ogni nodo mostra nome, sito, ruolo, versione, ritardo di replica e dati.',
     ],
@@ -3660,21 +3961,23 @@ const MANUALE = [
   {
     id: 'insight', titolo: 'Insight',
     paragrafi: [
-      'Insight è un health check giornaliero di MySQL, MariaDB e PostgreSQL. Per ogni server calcola un punteggio da 0 a 100 e un elenco di controlli con esito, raccomandazione e fonte. Il report include solo i server con l\'opzione "Includi nel report Insight" attiva nella configurazione del server.',
+      'Insight è un health check giornaliero di MySQL, MariaDB, SQL Server, PostgreSQL e MongoDB. Per ogni server calcola un punteggio da 0 a 100 e un elenco di controlli con esito, raccomandazione e fonte. Il report include solo i server con l\'opzione "Includi nel report Insight" attiva nella configurazione del server, ed esegue i controlli selezionabili solo se selezionati per quel server: versione e configurazione restano sempre attive.',
       'Il report viene generato ogni giorno all\'ora impostata nei parametri, e si può rigenerare con "Genera ora". La pagina mostra la data di generazione e quella della prossima produzione.',
     ],
     elenco: [
-      'Controlli comuni: disponibilità, versione (con fine supporto), replica, cluster, chiavi primarie, indici inutilizzati, utenti, query lente e lunghe.',
-      'Controlli di configurazione MySQL/MariaDB: connessioni, buffer pool, tabelle temporanee, binary log, durabilità, slow query log, sql_mode, local_infile.',
-      'Controlli PostgreSQL: WAL, archiviazione WAL, cifratura delle password, connessioni, cache, transazioni inattive, log delle query lente.',
+      'Comuni: disponibilità e versione con fine supporto.',
+      'MySQL e MariaDB: topologia, cluster InnoDB o Galera, replica, chiavi primarie, indici inutilizzati, account e privilegi, query lente e lunghe; configurazione con connessioni, buffer pool, tabelle temporanee su disco, binary log (formato e scadenza), durabilità, slow query log, sql_mode, local_infile, innodb_file_per_table, TLS.',
+      'SQL Server: topologia, memoria di sistema, max server memory, parallelismo (cost threshold e MAXDOP), xp_cmdshell, file di tempdb, auto close e auto shrink, verifica delle pagine, backup completi e del log, query lente e lunghe.',
+      'MongoDB: fine supporto della versione, stato del replica set con membri e ritardo dei secondari, finestra dell\'oplog, connessioni, cache WiredTiger e operazioni lunghe. I replica set si riconoscono dal nome e vengono raggruppati nella topologia.',
+      'PostgreSQL: WAL e archiviazione WAL, cifratura delle password, TLS, checksum dei dati, autovacuum, tuple morte, slot di replica inattivi, connessioni, cache, transazioni inattive, query lente, log delle query lente.',
       'Un server non raggiungibile ha punteggio 0.',
     ],
   },
   {
     id: 'insight-ia', titolo: 'Insight con IA (amministratore)',
     paragrafi: [
-      'Se abilitato, il report Insight include un commento generato da un modello di intelligenza artificiale. Il provider si sceglie nella pagina "Insight IA": Anthropic, OpenAI oppure entrambi. Con entrambi, il commento riporta la risposta di ciascun provider, uno sotto l\'altro. Ogni provider richiede la propria chiave API, inserita una sola volta e poi cifrata nel database.',
-      'Ogni modello si indica per nome nella stessa pagina (per esempio un modello Sonnet di Anthropic, gpt-4.1-mini per OpenAI). Il pulsante "Prova connessione" verifica le chiavi e i modelli inviando una richiesta di prova: va usato dopo il salvataggio.',
+      'Se abilitato, il report Insight include un commento generato da un modello di intelligenza artificiale. Il provider si sceglie nella pagina "Insight IA": Anthropic (Claude), OpenAI, entrambi oppure Ollama locale. Con entrambi, il commento riporta la risposta di ciascun provider, uno sotto l\'altro. Anthropic e OpenAI richiedono la propria chiave API, inserita una sola volta e poi cifrata nel database. Ollama non richiede chiave: il modello gira sull\'host, all\'indirizzo indicato nella pagina, e i dati restano sulla macchina.',
+      'Ogni modello si indica per nome nella stessa pagina (per esempio claude-sonnet-5-5 per Anthropic, gpt-4.1-mini per OpenAI). Il pulsante "Prova connessione" verifica le chiavi e i modelli inviando una richiesta di prova: va usato dopo il salvataggio.',
       'L\'intestazione del commento riporta il provider e il modello che lo hanno prodotto. Se il provider non risponde, il report viene comunque generato, e l\'errore compare al posto del commento.',
     ],
     elenco: [
@@ -3687,7 +3990,7 @@ const MANUALE = [
   {
     id: 'ricerca', titolo: 'Ricerca',
     paragrafi: [
-      'La ricerca cerca un database per nome su tutti i server MySQL, MariaDB e PostgreSQL visibili. Richiede almeno 2 caratteri e non distingue maiuscole e minuscole.',
+      'La ricerca cerca un database per nome su tutti i server MySQL, MariaDB, PostgreSQL e SQL Server visibili. Richiede almeno 2 caratteri e non distingue maiuscole e minuscole.',
       'Il risultato indica server, sito e ambiente. I server che non rispondono sono elencati a parte.',
     ],
   },
@@ -3703,9 +4006,10 @@ const MANUALE = [
     paragrafi: [
       'Parametri di rilevamento: frequenze dei controlli, limiti delle query, giorni di conservazione dei dati, ora di Insight. Ogni parametro ha un intervallo ammesso e si riporta al predefinito con un clic.',
       'Siti: l\'anagrafica dei siti in cui si trovano i server (per esempio Roma, Viterbo, AWS cloud). Un sito in uso non si può eliminare; rinominandolo, il nuovo nome va a tutti i server che lo usano.',
-      'Server da monitorare: l\'anagrafica. Per ogni server si indicano nome, tipo (MySQL/MariaDB, PostgreSQL, router, database del monitor), host, porta, utente, ambiente (produzione, certificazione, collaudo o non definito), sito e cluster Galera se presente. La password viene salvata cifrata e non viene più mostrata. Il pulsante di test verifica la connessione.',
+      'Server da monitorare: l\'anagrafica. Per ogni server si indicano nome, tipo (MySQL/MariaDB, PostgreSQL, SQL Server, MongoDB, router, database del monitor), host, porta, utente, ambiente (produzione, certificazione, collaudo o non definito), sito e cluster Galera se presente. La password viene salvata cifrata e non viene più mostrata. Il pulsante di test verifica la connessione.',
       'Includi nel report Insight: attiva o disattiva il server nel report giornaliero e nella pagina Insight. Un server escluso non viene analizzato e non compare nel commento IA. Per router e database del monitor l\'opzione non è disponibile.',
-      'Utenti: creazione, ruolo, server assegnati, reset della password di un altro utente, eliminazione.',
+      'Insight IA: provider (Anthropic, OpenAI, entrambi o Ollama locale), modelli, indirizzo di Ollama e chiavi API. Telegram: notifiche degli eventi, gravità minima e token del bot. Variabili di configurazione: storico delle modifiche alle variabili dei server.',
+      'Utenti: creazione, profilo, server assegnati, reset della password di un altro utente, eliminazione.',
       'Esporta configurazione: scarica un file JSON con server, utenti e parametri. Le password non sono incluse.',
     ],
   },
@@ -3730,6 +4034,23 @@ const MANUALE = [
       'Un cluster Galera è fermo: il monitor indica il nodo candidato. Il ripristino va eseguito con le procedure del cluster, non dal monitor.',
       'I dati sembrano vecchi: "Rileva ora" avvia un rilevamento completo. La data di aggiornamento è in cima alla dashboard.',
       'Le password non funzionano dopo una reinstallazione: la chiave APP_SECRET_KEY deve essere la stessa usata per salvarle.',
+    ],
+  },
+  {
+    id: 'funzioni-ia', titolo: 'Funzioni IA (quando abilitate)',
+    paragrafi: [
+      'Con l\'IA abilitata nella pagina Insight IA, il programma può usare un modello (Anthropic, OpenAI o entrambi) per commentare il report Insight e per alcune funzioni su richiesta. Le funzioni producono solo testo: non eseguono nulla sui database monitorati e non applicano le proposte, che restano una decisione dell\'operatore.',
+      'Con l\'IA disabilitata nessuna di queste funzioni chiama il provider, e il report Insight usa solo i controlli interni.',
+    ],
+    elenco: [
+      'Commento nel report Insight (automatico): ogni giorno, alla produzione Insight, il modello riassume i server inclusi nel report (sintesi, problemi prioritari, azioni consigliate). Il commento riporta il provider e il modello. Se il provider non risponde, il report viene generato lo stesso e compare l\'errore.',
+      'Spiega evento (lista eventi): spiega cosa significa un evento, la causa probabile e il primo controllo da fare.',
+      'Spiega query lenta (scheda Report): spiega perché la query può costare tanto e cosa indica il piano di esecuzione.',
+      'Suggerisci query (scheda Report): propone al massimo tre miglioramenti, come un indice da valutare o una riscrittura, con il rischio e il modo di verificarli in un ambiente di prova.',
+      'Raggruppa incidenti (pannello AssistenteIA in dashboard): raggruppa gli eventi recenti per causa probabile.',
+      'Anomalie (pannello AssistenteIA): cerca nell\'ultima settimana le ore con un numero di eventi fuori dall\'ordinario, calcolato in modo statistico, e il modello ne spiega le cause possibili. Non fa previsioni.',
+      'Domanda libera (pannello AssistenteIA): risponde in linguaggio naturale usando solo gli eventi recenti e il report Insight visibili all\'utente. Se il contesto non basta, lo dichiara.',
+      'Dati inviati al provider: per le funzioni su richiesta, i dati dell\'evento, della query o degli eventi, con testi troncati e caratteri di controllo rimossi. Non vengono inviati indirizzi di rete, porte o password dei server. Le query possono contenere nomi di tabelle, colonne e a volte valori: vengono inviate così come sono.',
     ],
   },
 ];
@@ -3768,7 +4089,7 @@ function AboutPage() {
         <p className="muted">Agent Free · Basic · Alfa</p>
         <p>
           Monitoraggio di MySQL, MariaDB, PostgreSQL e SQL Server senza installare agenti sui server:
-          tutto avviene via JDBC, in sola lettura.
+          tutto avviene tramite driver di connessione, in sola lettura.
         </p>
       </section>
       <section className="card about-autore">
@@ -3797,6 +4118,7 @@ const PAGES = [
   { id: 'dashboard', label: 'Dashboard di monitoraggio' },
   { id: 'ricerca', label: 'Ricerca', permesso: 'monitoraggio' },
   { id: 'insight', label: 'Insight', permesso: 'monitoraggio' },
+  { id: 'bloccate', label: 'Transazioni bloccate', permesso: 'monitoraggio' },
   { id: 'statistiche', label: 'Indici', permesso: 'monitoraggio' },
   { id: 'config', label: 'Configurazione', permesso: 'monitoraggio' },
   { id: 'report', label: 'Report' },
@@ -3954,6 +4276,113 @@ function UserMenu({ user, onLogout }) {
   );
 }
 
+/* Interruttore rapido delle notifiche Telegram, nella barra in alto. Solo amministratore.
+   Usa la stessa configurazione della pagina Telegram: disattivare non richiede token né chat ID. */
+function TelegramSwitch() {
+  const [abilitata, setAbilitata] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [errore, setErrore] = useState(null);
+
+  useEffect(() => {
+    api('/telegram-config').then((s) => setAbilitata(s.abilitata)).catch((e) => setErrore(e.message));
+  }, []);
+
+  async function commuta() {
+    const nuovo = !abilitata;
+    setBusy(true); setErrore(null);
+    try {
+      const s = await api('/telegram-config', { method: 'PUT', body: { abilitata: nuovo } });
+      setAbilitata(s.abilitata);
+    } catch (e) {
+      setErrore(e.message);
+    }
+    setBusy(false);
+  }
+
+  if (abilitata === null && !errore) return null;
+
+  return (
+    <div className="telegram-switch">
+      <button className={abilitata ? 'menu-item active' : 'menu-item'} aria-pressed={!!abilitata}
+        disabled={busy || abilitata === null} onClick={commuta}
+        title={errore || (abilitata ? 'Notifiche Telegram attive: clic per disattivarle' : 'Notifiche Telegram disattivate: clic per attivarle')}>
+        Telegram: {abilitata ? 'attive' : 'disattive'}
+      </button>
+      {errore && <span className="telegram-errore small" role="alert">{errore}</span>}
+    </div>
+  );
+}
+
+/* Transazioni bloccate: sessioni in attesa di un lock e la sessione che lo tiene, su tutti i server visibili. Aggiorna ogni 15 s. */
+function TransazioniBloccatePage({ permessi }) {
+  const [righe, setRighe] = useState(null);
+  const [errore, setErrore] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [conferma, setConferma] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const carica = useCallback(async () => {
+    try {
+      const r = await api('/transazioni-bloccate');
+      setRighe(r.righe);
+      setErrore(null);
+    } catch (e) {
+      setErrore(e.message);
+    }
+  }, []);
+
+  useEffect(() => {
+    carica();
+    const t = setInterval(carica, 15000);
+    return () => clearInterval(t);
+  }, [carica]);
+
+  async function termina(row) {
+    setConferma(null); setBusy(true); setMsg(null); setErrore(null);
+    try {
+      const r = await api('/transazioni-bloccate/termina', { method: 'POST', body: { server: row.SERVER_ID, sessione: row.TESTA_CATENA } });
+      setMsg(r.messaggio);
+      await carica();
+    } catch (e) {
+      setErrore(e.message);
+    }
+    setBusy(false);
+  }
+
+  return (
+    <section className="card">
+      {errore && <p className="bad-text banner">{errore}</p>}
+      {msg && <p className="muted small">{msg}</p>}
+      {conferma && (
+        <ConfirmDialog
+          messaggio={`Terminare la sessione ${conferma.TESTA_CATENA} su ${conferma.SERVER}? Le sue transazioni non confermate verranno annullate e le sessioni in attesa potranno proseguire.`}
+          etichetta="Termina sessione"
+          onConfirm={() => termina(conferma)}
+          onCancel={() => setConferma(null)}
+        />
+      )}
+      <h3>Transazioni bloccate{righe ? ` (${righe.length})` : ''}</h3>
+      {!righe && !errore && <p className="muted">Caricamento…</p>}
+      {righe && righe.length === 0 && <p className="muted">Nessuna sessione è in attesa di un lock sui server visibili.</p>}
+      {righe && righe.length > 0 && (
+        <Table rows={righe} columns={[
+          { key: 'SERVER', label: 'Server' }, { key: 'ID', label: 'Sessione in attesa' },
+          { key: 'UTENTE', label: 'Utente' }, { key: 'DB', label: 'Database' },
+          { key: 'SECONDI', label: 'Attesa (s)' }, { key: 'QUERY', label: 'Query in attesa' },
+          { key: 'BLOCCANTE_ID', label: 'Sessione bloccante', render: (v) => (v == null ? '—' : v) },
+          { key: 'TESTA_CATENA', label: 'Testa della catena', render: (v) => (v == null ? '—' : v) },
+          { key: 'QUERY_BLOCCANTE', label: 'Query bloccante', render: (v) => (v || '—') },
+          { key: 'azione', label: '', render: (v, row) => (
+            permessi.includes('configurazione') && row.TERMINABILE && row.TESTA_CATENA != null
+              ? <button className="danger" disabled={busy} onClick={() => setConferma(row)}>Termina {row.TESTA_CATENA}</button>
+              : '—'
+          ) },
+        ]} />
+      )}
+    </section>
+  );
+}
+
 /* Interfaccia dopo l'accesso: intestazione con utente, menu di navigazione, pagina corrente. */
 function Console({ user, permessi, onLogout }) {
   const [page, go] = usePage();
@@ -3967,7 +4396,10 @@ function Console({ user, permessi, onLogout }) {
     <div className="app">
       <div className="topbar">
         <Brand />
-        <UserMenu user={user} onLogout={onLogout} />
+        <div className="topbar-azioni">
+          {permessi.includes('configurazione') && <TelegramSwitch />}
+          <UserMenu user={user} onLogout={onLogout} />
+        </div>
       </div>
       <nav className="menu" aria-label="Navigazione principale">
         {voci.map((p) => (
@@ -3985,6 +4417,7 @@ function Console({ user, permessi, onLogout }) {
         {corrente === 'dashboard' && <Dashboard key={refresh} />}
         {corrente === 'config' && <ConfigPage me={user} permessi={permessi} onChanged={() => setRefresh((x) => x + 1)} />}
         {corrente === 'insight' && <InsightPage permessi={permessi} />}
+        {corrente === 'bloccate' && <TransazioniBloccatePage permessi={permessi} />}
         {corrente === 'statistiche' && <StatisticsPage />}
         {corrente === 'ricerca' && <RicercaPage />}
         {corrente === 'report' && <ReportTab />}

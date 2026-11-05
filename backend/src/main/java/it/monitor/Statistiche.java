@@ -101,7 +101,8 @@ final class Statistiche {
     static List<Map<String, Object>> databases(JsonNode cfg) throws SQLException {
         String sql;
         if (Main.isPostgres(cfg)) sql = "SELECT datname AS name FROM pg_database WHERE datallowconn AND NOT datistemplate ORDER BY 1";
-        else if (Main.text(cfg, "kind").equals("sqlserver")) sql = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND name <> 'tempdb' ORDER BY name";
+        // Solo i database che il login può aprire: gli altri darebbero "Cannot open database ... requested by the login"
+        else if (Main.text(cfg, "kind").equals("sqlserver")) sql = "SELECT name FROM sys.databases WHERE state_desc = 'ONLINE' AND name <> 'tempdb' AND HAS_DBACCESS(name) = 1 ORDER BY name";
         else sql = "SELECT SCHEMA_NAME AS name FROM information_schema.SCHEMATA WHERE SCHEMA_NAME NOT IN ('mysql','information_schema','performance_schema','sys') ORDER BY 1";
         try (Connection c = Main.open(cfg); Statement st = c.createStatement(); ResultSet rs = st.executeQuery(sql)) {
             return Main.rows(rs);

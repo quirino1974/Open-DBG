@@ -1,85 +1,134 @@
-USER PERMISSIONS FOR MONITORING
+Monitoring account permissions
+==============================
 Author: Quirino Scaramastra
 
-The monitor only reads. No check runs writes or DDL.
-Execution plans (EXPLAIN) are not run: for writes (UPDATE, DELETE, INSERT ... SELECT)
-only the read part of the query is planned.
+The monitor must only read. No check runs writes or DDL. Execution plans (EXPLAIN) do not run the
+query; for writes (UPDATE, DELETE, INSERT ... SELECT) only the read part is planned.
 
 
-MYSQL 8.4 AND MARIADB 11.4
+MySQL 8.4 and MariaDB 11.4
 --------------------------
 
-Create a dedicated user instead of using root:
+Today the MySQL/MariaDB servers in the inventory use `root`. For a dedicated account (recommended):
 
     CREATE USER 'dbguardian'@'%' IDENTIFIED BY '<password>';
     GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'dbguardian'@'%';
+    -- performance_schema and sys are covered by SELECT ON *.*; without performance_schema enabled there are no slow queries
     FLUSH PRIVILEGES;
 
-Without performance_schema enabled there are no slow queries.
+Check                        Required permission
+Active connections           PROCESS
+Active queries               PROCESS
+Slowest queries              SELECT on performance_schema (performance_schema=ON)
+Execution plan               SELECT on the tables of the query
+Users and password expiry    SELECT on mysql.user
+Replication                  REPLICATION CLIENT
+Unused indexes               SELECT on sys / performance_schema
 
-Permissions per check:
-- active connections and active queries: PROCESS
-- slowest queries: SELECT on performance_schema (performance_schema=ON)
-- execution plan: SELECT on the tables of the query
-- users and password expiry: SELECT on mysql.user
-- replication: REPLICATION CLIENT
-- unused indexes: SELECT on sys and performance_schema
-
-MariaDB: performance_schema is disabled by default. Enable it in the server
-configuration with performance_schema=ON.
+MariaDB: performance_schema is disabled by default; enable it in the configuration (performance_schema=ON).
 
 
-POSTGRESQL 17
+PostgreSQL 17
 -------------
 
     CREATE ROLE dbguardian_mon LOGIN PASSWORD '<password>';
     GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO dbguardian_mon;
-
-For each monitored database:
-
-    GRANT CONNECT ON DATABASE <database> TO dbguardian_mon;
+    -- for each monitored database (for example statstest):
+    GRANT CONNECT ON DATABASE statstest TO dbguardian_mon;
     GRANT USAGE ON SCHEMA public TO dbguardian_mon;
     GRANT SELECT ON ALL TABLES IN SCHEMA public TO dbguardian_mon;
     ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbguardian_mon;
 
-Permissions per check:
-- connections, active queries and idle transactions: pg_monitor (pg_stat_activity)
-- slowest queries: the pg_stat_statements extension installed in the connected database
-- execution plan: SELECT on the tables of the query
-- role expiry: pg_roles, readable by everyone
+Check                                              Required permission
+Connections, active queries, idle transactions     pg_monitor (pg_stat_activity)
+Slowest queries                                    pg_stat_statements installed in the connected database
+Execution plan                                     SELECT on the tables of the query
+Role expiry                                        pg_roles (readable by everyone)
+Replication slots, dead tuples, autovacuum, TLS,
+checksums                                          pg_monitor (pg_replication_slots, pg_stat_user_tables) and
+                                                   pg_read_all_settings (pg_settings)
 
-For slow queries, install the extension in each connected database:
-
-    CREATE EXTENSION pg_stat_statements;
-
-It requires shared_preload_libraries = 'pg_stat_statements' and a server restart.
+For slow queries install the extension in every connected database: `CREATE EXTENSION pg_stat_statements;`
+(requires shared_preload_libraries = 'pg_stat_statements' and a restart).
 
 
-SQL SERVER 2022
+SQL Server 2022
 ---------------
 
-At server level:
-
+    -- at server level
     CREATE LOGIN stats_reader WITH PASSWORD = '<password>', CHECK_POLICY = ON;
     GRANT VIEW SERVER STATE TO stats_reader;
     GRANT VIEW SERVER PERFORMANCE STATE TO stats_reader;
     GRANT VIEW ANY DEFINITION TO stats_reader;
-
-For each monitored database:
-
-    USE <database>;
-    CREATE USER stats_reader FOR LOGIN stats_reader;
+    USE <database>; CREATE USER stats_reader FOR LOGIN stats_reader;
     ALTER ROLE db_datareader ADD MEMBER stats_reader;
     GRANT VIEW DATABASE STATE TO stats_reader;
     GRANT SHOWPLAN TO stats_reader;
-
-To avoid database closing and index counter resets:
-
+    -- to avoid databases closing and index counters being reset:
     ALTER DATABASE <database> SET AUTO_CLOSE OFF;
 
-Permissions per check:
-- connections, active queries and resources: VIEW SERVER STATE and VIEW SERVER PERFORMANCE STATE
-- slowest queries: VIEW SERVER PERFORMANCE STATE
-- users and login expiry: VIEW ANY DEFINITION
-- index fragmentation and usage: VIEW DATABASE STATE
-- execution plan: SHOWPLAN and SELECT on the tables
+Check                                  Required permission
+Connections, active queries, resources VIEW SERVER STATE / VIEW SERVER PERFORMANCE STATE
+Slowest queries                        VIEW SERVER PERFORMANCE STATE
+Users and login expiry                 VIEW ANY DEFINITION
+Index fragmentation and usage          VIEW DATABASE STATE
+Execution plan                         SHOWPLAN and SELECT on the tables
+Backups: last full and log             read access to msdb.dbo.backupset (see below)
+
+For the backup check (last full and log backup per database) the account must be able to read
+`msdb.dbo.backupset`:
+
+    USE msdb;
+    CREATE USER stats_reader FOR LOGIN stats_reader;
+    GRANT SELECT ON dbo.backupset TO stats_reader;
+
+Without this permission the check reports "reading msdb failed" and the other checks stay active.
+
+
+MongoDB 8.0
+-----------
+
+Monitoring user in the authentication database (admin), without using the administrator user:
+
+    db.getSiblingDB("admin").createUser({ user: "dbguardian", pwd: "<password>", roles: [ "clusterMonitor", "readAnyDatabase" ] })
+
+In the "database" field of the server enter the authentication database (empty = admin).
+
+Check                                       Required permission
+Replica set status, lag, priority and votes clusterMonitor (replSetGetStatus, replSetGetConfig)
+Long-running operations                     clusterMonitor ($currentOp)
+Connections, WiredTiger cache, memory       clusterMonitor (serverStatus)
+Database sizes                              readAnyDatabase (listDatabases)
+Slowest queries                             read access to system.profile in user databases (readAnyDatabase).
+                                            The profiler must be enabled by the administrator:
+                                            `db.setProfilingLevel(1, { slowms: 100 })` on every database to monitor,
+                                            on the primary node
+Oplog window                                read access to local.oplog.rs: to be verified in your environment with the role used
+
+The roles above are the ones used in the lab; they have not been reduced to the minimum.
+
+
+Account for terminating blocking sessions (optional)
+----------------------------------------------------
+
+The monitor stays read-only with its own user. The "Termina sessione" button (Blocking transactions
+page and Telegram) uses a separate account, configured in the server settings, that only has the
+permission to terminate sessions:
+
+- SQL Server: `CREATE LOGIN kill_operator WITH PASSWORD = '<password>', CHECK_POLICY = ON;` then `GRANT ALTER ANY CONNECTION TO kill_operator;`
+- MySQL / MariaDB: `CREATE USER 'kill_operator'@'%' IDENTIFIED BY '<password>';` then `GRANT CONNECTION_ADMIN ON *.* TO 'kill_operator'@'%';` (on MySQL 8 this is the CONNECTION_ADMIN privilege; on MariaDB use SUPER)
+- PostgreSQL: `CREATE ROLE kill_operator LOGIN PASSWORD '<password>';` then `GRANT pg_signal_backend TO kill_operator;`
+
+Terminating a session also requires Telegram to be active in the general settings and for the server.
+The password is stored encrypted in the database and is never shown.
+
+If the login fails with "Password did not match", the password on the server differs from the one saved
+in the inventory: reset it on the server and enter it again in the server settings. The monitor
+does not change server passwords.
+
+Monitoring suspension. A server with the "Sospendi monitoraggio" flag enabled is not connected by the
+monitor: it has no checks, no Insight report and no Telegram notifications. For these servers the
+monitor needs no permission at all. The flag changes nothing on the monitored server.
+
+Test user. `utente_applicativo` is not a monitor user. It is used to generate test load on the
+database `vendite` and has read and write permissions on that database. The monitor never uses it.

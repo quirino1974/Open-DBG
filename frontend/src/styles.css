@@ -117,6 +117,22 @@ button:hover { filter: brightness(1.12); }
 button:active { transform: translateY(1px); }
 button:disabled { opacity: .5; cursor: default; }
 button.secondary { background: #132340; color: #e6edf8; border: 1px solid #22334f; }
+/* Pulsanti delle funzioni IA: riconoscibili dall'etichetta AI */
+.ai-btn { background: #4c1d95; color: #f5f3ff; border: 1px solid #7c3aed; font-size: 12px; padding: 3px 8px; margin: 2px 4px 2px 0; border-radius: 6px; font-weight: 600; }
+.ai-btn:hover:not(:disabled) { background: #5b21b6; }
+.ai-cella { min-width: 90px; }
+.ai-risposta { margin-top: 6px; padding: 8px 10px; border-radius: 6px; background: #14102a; border: 1px solid #4c1d95; white-space: pre-wrap; font-size: 13px; line-height: 1.45; max-width: 560px; }
+.ai-risposta.ai-errore { border-color: #b91c1c; color: #fecaca; }
+.ai-azioni { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-domanda { display: flex; gap: 6px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.ai-domanda input { flex: 1; min-width: 180px; }
+/* Icona di elaborazione IA: due esagoni che ruotano uno sull'altro, in senso opposto */
+.ai-elab { display: inline-block; vertical-align: middle; margin-left: 12px; overflow: visible; filter: drop-shadow(0 0 4px rgba(56,189,248,.45)); }
+.ai-elab-a, .ai-elab-b { transform-box: fill-box; transform-origin: center; animation: ai-ruota 1.6s linear infinite; }
+.ai-elab-b { animation-name: ai-ruota-inversa; }
+@keyframes ai-ruota { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes ai-ruota-inversa { from { transform: rotate(0deg); } to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .ai-elab-a, .ai-elab-b { animation: none; } }
 button.danger { background: linear-gradient(135deg, #f43f5e, #b91c1c); }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; background: #0a1426; color: #e6edf8; border: 1px solid #22334f; border-radius: 8px; }
 .icon-btn:hover { border-color: #38bdf8; background: #132340; filter: none; }
@@ -131,7 +147,8 @@ tbody tr:last-child td { border-bottom: none; }
 td code, .jdbc { font-size: 12px; word-break: break-all; color: #bae6fd; }
 td code { white-space: pre-wrap; display: inline-block; max-width: 480px; }
 tr.clickable { cursor: pointer; }
-tr.clickable:hover td { background: rgba(56,189,248,.1); }
+tr.clickable:hover td, tr.clickable:focus-visible td { background: rgba(56,189,248,.1); }
+tr.clickable:focus-visible { outline: none; }
 .sql-cell { display: inline-block; max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .sql-box { position: relative; }
 .sql-box .icon-btn { position: absolute; top: 8px; right: 8px; }
@@ -535,6 +552,11 @@ tr.clickable { cursor: pointer; }
 .help-sommario { margin: 0; padding-left: 18px; font-size: 14px; color: #cbd5e1; line-height: 1.7; }
 .config-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 .config-bar .subtabs { margin-bottom: 18px; }
+/* Esporta e importa: stesso aspetto dei pulsanti secondari (l'importazione è un'etichetta che apre il file) */
+.config-azioni { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+label.file-button { display: inline-flex; align-items: center; padding: 8px 15px; border-radius: 9px; background: #132340; color: #e6edf8; border: 1px solid #22334f; font-size: 13px; font-weight: 600; cursor: pointer; transition: filter .12s ease; }
+label.file-button:hover { filter: brightness(1.2); }
+label.file-button:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 2px; }
 .sito-form { display: grid; grid-template-columns: 1fr 2fr auto; gap: 12px; align-items: end; }
 .sito-form .modal-actions { margin: 0; }
 @media (max-width: 900px) { .sito-form { grid-template-columns: 1fr; } }
@@ -685,3 +707,10 @@ tr.clickable { cursor: pointer; }
 }
 .checkbox-riga input[type="checkbox"]:checked::before, .controlli-server input[type="checkbox"]:checked::before { transform: translate(1px, -1px) rotate(-45deg) scale(1); }
 .checkbox-riga input[type="checkbox"]:focus-visible, .controlli-server input[type="checkbox"]:focus-visible { outline: 2px solid #7dd3fc; outline-offset: 2px; }
+
+/* Barra in alto: interruttore Telegram accanto al menu utente */
+.topbar-azioni { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.telegram-switch { display: flex; align-items: center; gap: 8px; }
+.telegram-switch .menu-item { padding: 7px 14px; }
+.telegram-errore { color: #f87171; }
+

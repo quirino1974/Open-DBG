@@ -2,19 +2,38 @@ RELEASE NOTES
 Author: Quirino Scaramastra
 
 
-2026-11-03 · Alpha version 0.1
-------------------------------
+2026-11-05 · Alpha 0.2
+----------------------
+
+- MongoDB 8.0: replica set status, lag, oplog window, long-running operations, WiredTiger cache,
+  connections, database sizes and slow queries through the profiler.
+- On-demand AI functions: explanation of an event or a query, suggestions for a query, summary
+  of incidents, questions about the monitoring and anomaly detection. Text only.
+- AI comment with a local Ollama model, in addition to Anthropic and OpenAI.
+- Host metrics (CPU and memory) from node_exporter, optional for each server.
+- "Termina sessione" button for blocking transactions, with a separate account that has only
+  the permission to terminate sessions.
+- "Sospendi monitoraggio": the server is not connected, neither checked nor included in Insight.
+- Catalogue of checks per technology: an unselected check is not run.
+- Statistics on indexes and databases, and site management in the settings (administrator only).
+- Manual inside the application.
+- The docker-compose.yml file no longer contains passwords or keys: they are read from the .env file.
+- The monitor uses only the project's Docker network: for servers on another network see README.en.txt.
+
+
+2026-11-03 · Alpha 0.1
+----------------------
 
 First version published as a lab.
 
 - Read-only JDBC monitoring of MySQL 8.4, MariaDB 11.4, PostgreSQL 17 and SQL Server 2022.
-- Dashboard with servers, clusters, replicas and states; InnoDB and Galera cluster topology.
-- Candidate node for recovery shown for stopped Galera clusters.
+- Dashboard with servers, clusters, replicas and states; topology of InnoDB and Galera clusters.
+- Indication of the candidate node for recovery for stopped Galera clusters.
 - Daily Insight with score, checks, results and recommendations.
 - Optional AI comment with Anthropic, OpenAI or both.
 - Telegram notifications with acknowledgement.
-- Database search by name across several servers.
+- Search for a database by name across several servers.
 - Execution plan (EXPLAIN) of queries, without running them.
 - Users with profiles, assigned servers, mandatory password change at first sign-in
-  and a limit on failed sign-in attempts.
-- Server passwords and API keys encrypted with APP_SECRET_KEY.
+  and a limit on login attempts.
+- Passwords of servers and API keys encrypted with APP_SECRET_KEY.
