@@ -1,5 +1,6 @@
 OPEN-DBG REQUIREMENTS
 Author: Quirino Scaramastra
+Alpha version: not for production use.
 
 SYSTEM
 ------

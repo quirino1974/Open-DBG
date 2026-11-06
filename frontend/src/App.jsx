@@ -4087,6 +4087,7 @@ function AboutPage() {
         <h2>Open-DBG</h2>
         <p><strong>Database Monitor Tool</strong></p>
         <p className="muted">Agent Free · Basic · Alfa</p>
+        <p className="muted">Versione alfa: non usare in produzione.</p>
         <p>
           Monitoraggio di MySQL, MariaDB, PostgreSQL e SQL Server senza installare agenti sui server:
           tutto avviene tramite driver di connessione, in sola lettura.

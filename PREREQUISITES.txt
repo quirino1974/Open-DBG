@@ -1,5 +1,6 @@
 REQUISITI DI OPEN-DBG
 Autore: Quirino Scaramastra
+Versione Alfa: non usare in produzione.
 
 SISTEMA
 -------

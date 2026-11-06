@@ -6,7 +6,7 @@ Open-DBG is a monitor for MySQL, MariaDB, PostgreSQL, Microsoft SQL Server and M
 It installs nothing on the monitored servers: it connects with database drivers, in read-only
 mode, and collects what the database exposes.
 
-Experimental lab, Alpha version. No support, no warranty, no scheduled maintenance.
+Experimental lab, Alpha version, not for production use. No support, no warranty, no scheduled maintenance.
 Do not use it in production without testing.
 
 
