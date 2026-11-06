@@ -234,7 +234,7 @@ button.tile, .tile { background: none; color: inherit; border: none; padding: 0;
 .winner-star { color: #facc15; font-size: 26px; line-height: 1; }
 
 /* ============================================================
-   DBGuardian: esagoni, logo, banner scorrevole
+   Open-DBG: esagoni, logo, banner scorrevole
    ============================================================ */
 .brand-bar { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
 .brand-bar h1 { line-height: 1.05; }

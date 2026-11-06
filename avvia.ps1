@@ -1,4 +1,4 @@
-# Avvio di DBGuardian su Windows (PowerShell, con Docker Desktop in esecuzione).
+# Avvio di Open-DBG su Windows (PowerShell, con Docker Desktop in esecuzione).
 # Crea il file .env la prima volta, genera APP_SECRET_KEY e avvia i container.
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
@@ -12,4 +12,4 @@ if (-not (Test-Path ".env")) {
     Write-Host "Creato .env con una nuova APP_SECRET_KEY. Conservane una copia al sicuro."
 }
 docker compose up -d --build
-Write-Host "DBGuardian su http://localhost:8080 (utente admin, password admin: cambiarla al primo accesso)"
+Write-Host "Open-DBG su http://localhost:8080 (utente admin, password admin: cambiarla al primo accesso)"

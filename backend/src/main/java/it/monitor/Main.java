@@ -250,7 +250,7 @@ public class Main {
             } else if (p.equals("/esportazione") && m.equals("GET")) {
                 richiedi(me, Auth.P_CONFIGURAZIONE);
                 ex.getResponseHeaders().set("Content-Disposition",
-                        "attachment; filename=\"dbguardian-configurazione-" + java.time.LocalDate.now() + ".json\"");
+                        "attachment; filename=\"open-dbg-configurazione-" + java.time.LocalDate.now() + ".json\"");
                 out = esporta();
             } else if (p.equals("/importazione") && m.equals("POST")) {
                 richiedi(me, Auth.P_CONFIGURAZIONE);
@@ -447,7 +447,7 @@ public class Main {
      */
     static Map<String, Object> importa(JsonNode b) throws SQLException {
         if (b == null || !b.isObject() || !b.path("server").isArray()) {
-            throw new IllegalArgumentException("File non valido: manca l'elenco dei server. Usare un file esportato da dbguardian.");
+            throw new IllegalArgumentException("File non valido: manca l'elenco dei server. Usare un file esportato da Open-DBG.");
         }
         int creati = 0;
         int aggiornati = 0;

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Avvio di DBGuardian su Linux e macOS.
+# Avvio di Open-DBG su Linux e macOS.
 # Crea il file .env la prima volta, genera APP_SECRET_KEY e avvia i container.
 set -e
 cd "$(dirname "$0")"
@@ -10,4 +10,4 @@ if [ ! -f .env ]; then
   echo "Creato .env con una nuova APP_SECRET_KEY. Conservane una copia al sicuro."
 fi
 docker compose up -d --build
-echo "DBGuardian su http://localhost:8080 (utente admin, password admin: cambiarla al primo accesso)"
+echo "Open-DBG su http://localhost:8080 (utente admin, password admin: cambiarla al primo accesso)"

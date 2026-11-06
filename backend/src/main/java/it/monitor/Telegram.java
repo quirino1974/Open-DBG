@@ -248,7 +248,7 @@ final class Telegram {
         if (token == null || r.chatId().isEmpty()) throw new IllegalStateException("Token del bot o chat ID non configurati");
         ObjectNode corpo = Main.JSON.createObjectNode();
         corpo.put("chat_id", r.chatId());
-        corpo.put("text", "DBGuardian: notifica di prova. Se leggi questo messaggio, Telegram è configurato correttamente.");
+        corpo.put("text", "Open-DBG: notifica di prova. Se leggi questo messaggio, Telegram è configurato correttamente.");
         api(token, "sendMessage", corpo, 20);
         return "Messaggio inviato";
     }

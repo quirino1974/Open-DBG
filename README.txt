@@ -1,8 +1,8 @@
-DBGUARDIAN
+OPEN-DBG
 Monitor open source per database, senza agent
 Autore: Quirino Scaramastra
 
-DBGuardian è un monitor per MySQL, MariaDB, PostgreSQL, Microsoft SQL Server e MongoDB.
+Open-DBG è un monitor per MySQL, MariaDB, PostgreSQL, Microsoft SQL Server e MongoDB.
 Non installa nulla sui server monitorati: si collega con i driver di connessione, in sola
 lettura, e raccoglie quello che il database espone.
 
@@ -80,17 +80,17 @@ il container viene ricreato o aggiornato.
 
 Backup del volume (Linux e macOS):
 
-    docker run --rm -v dbguardian_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/dbguardian-db.tgz -C /dati .
+    docker run --rm -v dbguardian_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/open-dbg-db.tgz -C /dati .
 
 Backup del volume (Windows, PowerShell):
 
-    docker run --rm -v dbguardian_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/dbguardian-db.tgz -C /dati .
+    docker run --rm -v dbguardian_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/open-dbg-db.tgz -C /dati .
 
 Il nome del volume dipende dalla cartella del progetto: se la cartella si chiama
 dbguardian, il volume è dbguardian_db_data. Verificarlo con "docker volume ls".
 
 Ripristino: con il monitor fermo, si ricrea il volume e si estrae l'archivio dentro di esso
-con lo stesso comando, usando "tar xzf /backup/dbguardian-db.tgz -C /dati".
+con lo stesso comando, usando "tar xzf /backup/open-dbg-db.tgz -C /dati".
 
 
 ARRESTO

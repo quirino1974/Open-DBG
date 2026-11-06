@@ -1251,7 +1251,7 @@ function WarRoomView({ data, onOpen, onExit }) {
   return (
     <div className="war-room">
       <div className="wr-hud wr-titolo">
-        <div className="wr-brand">DBGUARDIAN <span>// OVERVIEW</span></div>
+        <div className="wr-brand">OPEN-DBG <span>// OVERVIEW</span></div>
         <div className="wr-orario">Rilevato alle {new Date(data.generatoAlle).toLocaleTimeString('it-IT')}</div>
         <div className="wr-contatori">
           <span style={{ color: WR_COLORI.ok }}>{conteggi.ok} operativi</span>
@@ -1489,7 +1489,7 @@ function Dashboard() {
       {data && data.monitor && data.monitor.length > 0 && (
         <section className="set monitor-set">
           <div className="set-head">
-            <div className="set-title"><h3>Database del monitor</h3><span className="set-kind">DBGuardian</span></div>
+            <div className="set-title"><h3>Database del monitor</h3><span className="set-kind">Open-DBG</span></div>
             <span className="muted">il database che conserva anagrafica, snapshot ed eventi</span>
           </div>
           <div className="tiles">
@@ -2653,7 +2653,7 @@ function Brand() {
     <div className="brand">
       <Logo />
       <div>
-        <h1>DBGuardian</h1>
+        <h1>Open-DBG</h1>
         <div className="brand-line">
           <span className="brand-sub">Database Monitor Tool</span>
           <span className="brand-agent">Agent Free</span>
@@ -3916,7 +3916,7 @@ const MANUALE = [
   {
     id: 'introduzione', titolo: 'Introduzione',
     paragrafi: [
-      'DBGuardian è un monitor per database MySQL, MariaDB, PostgreSQL, SQL Server e MongoDB. Raccoglie lo stato dei server in sola lettura, mostra cluster, repliche e singoli server, registra gli eventi e produce un health check giornaliero.',
+      'Open-DBG è un monitor per database MySQL, MariaDB, PostgreSQL, SQL Server e MongoDB. Raccoglie lo stato dei server in sola lettura, mostra cluster, repliche e singoli server, registra gli eventi e produce un health check giornaliero.',
       'Il programma non modifica i database monitorati. Le uniche azioni che cambiano stato sono quelle di configurazione dell\'anagrafica e dei parametri, riservate all\'amministratore.',
     ],
   },
@@ -4084,7 +4084,7 @@ function AboutPage() {
   return (
     <div className="about">
       <section className="card about-prodotto">
-        <h2>DBGuardian</h2>
+        <h2>Open-DBG</h2>
         <p><strong>Database Monitor Tool</strong></p>
         <p className="muted">Agent Free · Basic · Alfa</p>
         <p>
@@ -4100,13 +4100,13 @@ function AboutPage() {
       <section className="card about-licenza">
         <h3>Licenza</h3>
         <p>
-          DBGuardian è distribuito con licenza <strong>Apache License, Version 2.0</strong>.
+          Open-DBG è distribuito con licenza <strong>Apache License, Version 2.0</strong>.
           Copyright 2026 Quirino Scaramastra.
         </p>
         <p>
           Chiunque può usare, studiare, modificare e distribuire il software, anche a fini commerciali.
           Chi lo distribuisce deve includere la licenza e il file NOTICE, e conservare le note di copyright.
-          La licenza include una concessione sui brevetti dei contributori e non concede diritti sul nome DBGuardian.
+          La licenza include una concessione sui brevetti dei contributori e non concede diritti sul nome Open-DBG.
         </p>
         <p className="muted small">Testo completo: file LICENSE e NOTICE nella cartella del progetto.</p>
       </section>
