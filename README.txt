@@ -80,14 +80,16 @@ il container viene ricreato o aggiornato.
 
 Backup del volume (Linux e macOS):
 
-    docker run --rm -v dbguardian_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/open-dbg-db.tgz -C /dati .
+    docker run --rm -v open-dbg_db_data:/dati -v "$PWD":/backup alpine tar czf /backup/open-dbg-db.tgz -C /dati .
 
 Backup del volume (Windows, PowerShell):
 
-    docker run --rm -v dbguardian_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/open-dbg-db.tgz -C /dati .
+    docker run --rm -v open-dbg_db_data:/dati -v "${PWD}:/backup" alpine tar czf /backup/open-dbg-db.tgz -C /dati .
 
 Il nome del volume dipende dalla cartella del progetto: se la cartella si chiama
-dbguardian, il volume è dbguardian_db_data. Verificarlo con "docker volume ls".
+open-dbg, il volume è open-dbg_db_data. Verificarlo con "docker volume ls".
+Se hai già un'installazione nella cartella dbguardian, i dati sono nel volume dbguardian_db_data:
+fai il backup prima di rinominare la cartella, altrimenti Docker crea un volume nuovo e vuoto.
 
 Ripristino: con il monitor fermo, si ricrea il volume e si estrae l'archivio dentro di esso
 con lo stesso comando, usando "tar xzf /backup/open-dbg-db.tgz -C /dati".

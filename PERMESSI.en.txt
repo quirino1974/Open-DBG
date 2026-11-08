@@ -11,8 +11,8 @@ MySQL 8.4 and MariaDB 11.4
 
 Today the MySQL/MariaDB servers in the inventory use `root`. For a dedicated account (recommended):
 
-    CREATE USER 'dbguardian'@'%' IDENTIFIED BY '<password>';
-    GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'dbguardian'@'%';
+    CREATE USER 'open_dbg'@'%' IDENTIFIED BY '<password>';
+    GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'open_dbg'@'%';
     -- performance_schema and sys are covered by SELECT ON *.*; without performance_schema enabled there are no slow queries
     FLUSH PRIVILEGES;
 
@@ -31,13 +31,13 @@ MariaDB: performance_schema is disabled by default; enable it in the configurati
 PostgreSQL 17
 -------------
 
-    CREATE ROLE dbguardian_mon LOGIN PASSWORD '<password>';
-    GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO dbguardian_mon;
+    CREATE ROLE open_dbg_mon LOGIN PASSWORD '<password>';
+    GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO open_dbg_mon;
     -- for each monitored database (for example statstest):
-    GRANT CONNECT ON DATABASE statstest TO dbguardian_mon;
-    GRANT USAGE ON SCHEMA public TO dbguardian_mon;
-    GRANT SELECT ON ALL TABLES IN SCHEMA public TO dbguardian_mon;
-    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbguardian_mon;
+    GRANT CONNECT ON DATABASE statstest TO open_dbg_mon;
+    GRANT USAGE ON SCHEMA public TO open_dbg_mon;
+    GRANT SELECT ON ALL TABLES IN SCHEMA public TO open_dbg_mon;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO open_dbg_mon;
 
 Check                                              Required permission
 Connections, active queries, idle transactions     pg_monitor (pg_stat_activity)
@@ -90,7 +90,7 @@ MongoDB 8.0
 
 Monitoring user in the authentication database (admin), without using the administrator user:
 
-    db.getSiblingDB("admin").createUser({ user: "dbguardian", pwd: "<password>", roles: [ "clusterMonitor", "readAnyDatabase" ] })
+    db.getSiblingDB("admin").createUser({ user: "open_dbg", pwd: "<password>", roles: [ "clusterMonitor", "readAnyDatabase" ] })
 
 In the "database" field of the server enter the authentication database (empty = admin).
 

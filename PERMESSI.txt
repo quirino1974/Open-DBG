@@ -10,8 +10,8 @@ MySQL 8.4 e MariaDB 11.4
 
 Oggi i server MySQL/MariaDB dell'anagrafica usano root. Per un utente dedicato (consigliato):
 
-CREATE USER 'dbguardian'@'%' IDENTIFIED BY '<password>';
-GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'dbguardian'@'%';
+CREATE USER 'open_dbg'@'%' IDENTIFIED BY '<password>';
+GRANT PROCESS, REPLICATION CLIENT, SELECT ON *.* TO 'open_dbg'@'%';
 -- performance_schema e sys sono coperti da SELECT ON *.*; senza performance_schema attivo non ci sono query lente
 FLUSH PRIVILEGES;
 
@@ -29,13 +29,13 @@ MariaDB: performance_schema è disattivato di default; va attivato nella configu
 PostgreSQL 17
 -------------
 
-CREATE ROLE dbguardian_mon LOGIN PASSWORD '<password>';
-GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO dbguardian_mon;
+CREATE ROLE open_dbg_mon LOGIN PASSWORD '<password>';
+GRANT pg_monitor, pg_read_all_settings, pg_read_all_stats TO open_dbg_mon;
 -- per ogni database monitorato (es. statstest):
-GRANT CONNECT ON DATABASE statstest TO dbguardian_mon;
-GRANT USAGE ON SCHEMA public TO dbguardian_mon;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO dbguardian_mon;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO dbguardian_mon;
+GRANT CONNECT ON DATABASE statstest TO open_dbg_mon;
+GRANT USAGE ON SCHEMA public TO open_dbg_mon;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO open_dbg_mon;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO open_dbg_mon;
 
 Controllo  Permesso necessario
 Connessioni, query attive, transazioni inattive  pg_monitor (pg_stat_activity)
@@ -84,7 +84,7 @@ MongoDB 8.0
 
 Utente di monitoraggio nel database di autenticazione (admin), senza usare l'utente amministratore:
 
-db.getSiblingDB("admin").createUser({ user: "dbguardian", pwd: "<password>", roles: [ "clusterMonitor", "readAnyDatabase" ] })
+db.getSiblingDB("admin").createUser({ user: "open_dbg", pwd: "<password>", roles: [ "clusterMonitor", "readAnyDatabase" ] })
 
 Nel campo "database" del server va il database di autenticazione (vuoto = admin).
 
