@@ -37,7 +37,6 @@ services:
       DB_NAME: monitor
       DB_USER: monitor
       DB_PASSWORD: ${DB_PASSWORD:-pippo}
-      POLL_SECONDS: 15
       # Chiave che cifra le password dei server monitorati. Non è nel database: se si perde,
       # le password salvate non si possono più decifrare. Conservarne una copia al sicuro.
       APP_SECRET_KEY: ${APP_SECRET_KEY:?Impostare APP_SECRET_KEY nel file .env}

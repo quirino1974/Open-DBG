@@ -1,5 +1,5 @@
 {
-  "name": "monitor-mysql-web",
+  "name": "open-dbg-web",
   "private": true,
   "version": "1.0.0",
   "type": "module",

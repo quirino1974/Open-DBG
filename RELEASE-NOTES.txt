@@ -17,7 +17,7 @@ Autore: Quirino Scaramastra
 - Catalogo dei controlli per tecnologia: un controllo deselezionato non viene eseguito.
 - Statistiche su indici e database, e gestione dei siti nelle impostazioni (solo amministratore).
 - Manuale dentro l'applicazione.
-- Il file docker-compose.yml non contiene più password né chiavi: si leggono dal file .env.
+- Il file docker-compose.yml legge le password dal file .env; i valori di laboratorio sono documentati nel README.
 - La rete Docker del monitor è solo quella del progetto: per i server in un'altra rete vedere README.txt.
 
 

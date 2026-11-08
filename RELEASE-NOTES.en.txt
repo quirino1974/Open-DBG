@@ -17,7 +17,7 @@ Author: Quirino Scaramastra
 - Catalogue of checks per technology: an unselected check is not run.
 - Statistics on indexes and databases, and site management in the settings (administrator only).
 - Manual inside the application.
-- The docker-compose.yml file no longer contains passwords or keys: they are read from the .env file.
+- The docker-compose.yml file reads passwords from the .env file; lab values are documented in the README.
 - The monitor uses only the project's Docker network: for servers on another network see README.en.txt.
 
 

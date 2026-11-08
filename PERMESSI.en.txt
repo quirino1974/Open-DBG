@@ -122,7 +122,7 @@ permission to terminate sessions:
 Terminating a session also requires Telegram to be active in the general settings and for the server.
 The password is stored encrypted in the database and is never shown.
 
-If the login fails with "Password did not match", the password on the server differs from the one saved
+If the login fails with an authentication error (for example "Access denied" on MySQL or "password authentication failed" on PostgreSQL), the password on the server differs from the one saved
 in the inventory: reset it on the server and enter it again in the server settings. The monitor
 does not change server passwords.
 
@@ -130,5 +130,4 @@ Monitoring suspension. A server with the "Sospendi monitoraggio" flag enabled is
 monitor: it has no checks, no Insight report and no Telegram notifications. For these servers the
 monitor needs no permission at all. The flag changes nothing on the monitored server.
 
-Test user. `utente_applicativo` is not a monitor user. It is used to generate test load on the
-database `vendite` and has read and write permissions on that database. The monitor never uses it.
+Test user to generate load on a test database. It is not a monitor user and the monitor never uses it; it has read and write permissions only on that test database.
