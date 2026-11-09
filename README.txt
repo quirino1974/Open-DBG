@@ -1,6 +1,7 @@
 OPEN-DBG
 Monitor open source per database, senza agent
 Autore: Quirino Scaramastra
+Progetto a scopo didattico.
 
 Open-DBG è un monitor per MySQL, MariaDB, PostgreSQL, Microsoft SQL Server e MongoDB.
 Non installa nulla sui server monitorati: si collega con i driver di connessione, in sola
